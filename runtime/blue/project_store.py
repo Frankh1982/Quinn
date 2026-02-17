@@ -436,30 +436,6 @@ def _health_parse_lab_line(ln: str) -> Optional[Dict[str, str]]:
     }
 
 
-def _health_extract_labs_from_text(
-    *,
-    text: str,
-    source_file: str,
-    source_hint: str,
-    max_items: int,
-) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    if not text:
-        return out
-    for raw_ln in (text or "").splitlines():
-        if len(out) >= int(max_items or 0):
-            break
-        ln = (raw_ln or "").strip()
-        if not ln:
-            continue
-        lab = _health_parse_lab_line(ln)
-        if not lab:
-            continue
-        lab["source_file"] = source_file
-        lab["source_hint"] = source_hint
-        out.append(lab)
-    return out
-
 def _health_extract_labs_from_excel_blueprint(
     *,
     canonical_rel: str,
@@ -595,6 +571,8 @@ def refresh_health_profile_from_artifacts(
 
     all_labs: List[Dict[str, Any]] = []
 
+    from model_pipeline import _health_extract_labs_from_text as _mp_health_extract_labs_from_text
+
     for rf in raw_files:
         if len(all_labs) >= int(max_total_items or 0):
             break
@@ -644,14 +622,14 @@ def refresh_health_profile_from_artifacts(
                         line_in_page = 0
                         continue
                     line_in_page += 1
-                    labs = _health_extract_labs_from_text(
-                        text=ln,
-                        source_file=canonical_rel,
-                        source_hint=f"page {page}: line {line_in_page}",
-                        max_items=1,
-                    )
-                    if labs:
-                        all_labs.extend(labs)
+                    labs = _mp_health_extract_labs_from_text(ln)
+                    for lab in (labs or [])[:1]:
+                        if not isinstance(lab, dict):
+                            continue
+                        lab2 = dict(lab)
+                        lab2["source_file"] = canonical_rel
+                        lab2["source_hint"] = f"page {page}: line {line_in_page}"
+                        all_labs.append(lab2)
             continue
 
         # Image -> parse ocr_text
@@ -667,14 +645,14 @@ def refresh_health_profile_from_artifacts(
                     if not ln:
                         continue
                     line_no += 1
-                    labs = _health_extract_labs_from_text(
-                        text=ln,
-                        source_file=canonical_rel,
-                        source_hint=f"ocr line {line_no}",
-                        max_items=1,
-                    )
-                    if labs:
-                        all_labs.extend(labs)
+                    labs = _mp_health_extract_labs_from_text(ln)
+                    for lab in (labs or [])[:1]:
+                        if not isinstance(lab, dict):
+                            continue
+                        lab2 = dict(lab)
+                        lab2["source_file"] = canonical_rel
+                        lab2["source_hint"] = f"ocr line {line_no}"
+                        all_labs.append(lab2)
             continue
 
         # DOC/DOCX -> parse doc_text if present
@@ -690,14 +668,14 @@ def refresh_health_profile_from_artifacts(
                     if not ln:
                         continue
                     line_no += 1
-                    labs = _health_extract_labs_from_text(
-                        text=ln,
-                        source_file=canonical_rel,
-                        source_hint=f"line {line_no}",
-                        max_items=1,
-                    )
-                    if labs:
-                        all_labs.extend(labs)
+                    labs = _mp_health_extract_labs_from_text(ln)
+                    for lab in (labs or [])[:1]:
+                        if not isinstance(lab, dict):
+                            continue
+                        lab2 = dict(lab)
+                        lab2["source_file"] = canonical_rel
+                        lab2["source_hint"] = f"line {line_no}"
+                        all_labs.append(lab2)
             continue
 
     # Merge into profile (latest wins per name+unit)
@@ -1085,38 +1063,6 @@ def render_health_profile_snippet(project_name: str) -> str:
 
     return "\n".join([ln for ln in lines if ln.strip()]).strip()
 
-def _health_profile_has_meds(meds: Any) -> bool:
-    if not isinstance(meds, list):
-        return False
-    for m in meds:
-        if not isinstance(m, dict):
-            continue
-        name = str(m.get("name") or "").strip()
-        if name and (not _health_med_name_is_malformed(name)):
-            return True
-    return False
-
-def _health_profile_has_allergies(allergies: Any) -> bool:
-    if not isinstance(allergies, list):
-        return False
-    for a in allergies:
-        if not isinstance(a, dict):
-            continue
-        name = str(a.get("name") or "").strip()
-        if name:
-            return True
-    return False
-
-def _health_profile_has_weight(meas: Any) -> bool:
-    if not isinstance(meas, dict):
-        return False
-    w = meas.get("weight") if isinstance(meas, dict) else {}
-    if not isinstance(w, dict):
-        return False
-    wv = str(w.get("value") or "").strip()
-    wu = str(w.get("unit") or "").strip()
-    return bool(wv and wu)
-
 def _health_profile_has_labs(labs: Any) -> bool:
     if not isinstance(labs, list):
         return False
@@ -1135,6 +1081,11 @@ def seed_health_profile_from_user_history(project_name: str) -> Dict[str, Any]:
     health_profile.json in the same user's other projects.
     Best-effort, bounded, and non-destructive (fills missing only).
     """
+    from model_pipeline import (
+        _health_profile_has_meds as _mp_health_profile_has_meds,
+        _health_profile_has_allergies as _mp_health_profile_has_allergies,
+        _health_profile_has_weight as _mp_health_profile_has_weight,
+    )
     try:
         prof = load_health_profile(project_name)
     except Exception:
@@ -1142,17 +1093,17 @@ def seed_health_profile_from_user_history(project_name: str) -> Dict[str, Any]:
 
     missing = []
     try:
-        if not _health_profile_has_meds(prof.get("medications") if isinstance(prof, dict) else None):
+        if not _mp_health_profile_has_meds(prof):
             missing.append("medications")
     except Exception:
         missing.append("medications")
     try:
-        if not _health_profile_has_allergies(prof.get("allergies") if isinstance(prof, dict) else None):
+        if not _mp_health_profile_has_allergies(prof):
             missing.append("allergies")
     except Exception:
         missing.append("allergies")
     try:
-        if not _health_profile_has_weight(prof.get("measurements") if isinstance(prof, dict) else None):
+        if not _mp_health_profile_has_weight(prof):
             missing.append("weight")
     except Exception:
         missing.append("weight")
@@ -1218,9 +1169,9 @@ def seed_health_profile_from_user_history(project_name: str) -> Dict[str, Any]:
 
             # Require at least one meaningful field
             if not (
-                _health_profile_has_meds(obj.get("medications"))
-                or _health_profile_has_allergies(obj.get("allergies"))
-                or _health_profile_has_weight(obj.get("measurements"))
+                _mp_health_profile_has_meds(obj)
+                or _mp_health_profile_has_allergies(obj)
+                or _mp_health_profile_has_weight(obj)
                 or _health_profile_has_labs(obj.get("labs"))
             ):
                 continue
@@ -1246,13 +1197,13 @@ def seed_health_profile_from_user_history(project_name: str) -> Dict[str, Any]:
     new_prof = dict(prof) if isinstance(prof, dict) else _default_health_profile()
     fields_seeded: List[str] = []
 
-    if ("medications" in missing) and _health_profile_has_meds(best_prof.get("medications")):
+    if ("medications" in missing) and _mp_health_profile_has_meds(best_prof):
         new_prof["medications"] = best_prof.get("medications")
         fields_seeded.append("medications")
-    if ("allergies" in missing) and _health_profile_has_allergies(best_prof.get("allergies")):
+    if ("allergies" in missing) and _mp_health_profile_has_allergies(best_prof):
         new_prof["allergies"] = best_prof.get("allergies")
         fields_seeded.append("allergies")
-    if ("weight" in missing) and _health_profile_has_weight(best_prof.get("measurements")):
+    if ("weight" in missing) and _mp_health_profile_has_weight(best_prof):
         new_prof["measurements"] = best_prof.get("measurements")
         fields_seeded.append("weight")
     if ("labs" in missing) and _health_profile_has_labs(best_prof.get("labs")):
