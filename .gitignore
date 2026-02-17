@@ -10,3 +10,29 @@ notes/
 dist/
 build/
 node_modules/
+# runtime outputs / data
+projects/
+uploads/
+artifacts/
+logs/
+benchmarks/
+lens0_data/
+PDF/
+
+# big/binary
+*.zip
+*.pdf
+*.xlsx
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/

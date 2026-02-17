@@ -1,6 +1,0 @@
-I cannot provide a safe patch because anchor validation failed.
-
-Fix options:
-1) Ask again and mention the exact function/class/id you want to change.
-2) Re-upload the file so I can ingest the latest version.
-3) If the file is extremely large, ask to patch a specific section.
