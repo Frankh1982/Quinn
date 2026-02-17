@@ -1,0 +1,12 @@
+﻿__pycache__/
+.venv/
+venv/
+*.pyc
+logs/
+artifacts/
+benchmarks/
+uploads/
+notes/
+dist/
+build/
+node_modules/

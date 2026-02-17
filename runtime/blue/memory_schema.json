@@ -1,0 +1,67 @@
+{
+  "schema": "memory_schema_v1",
+  "version": 1,
+  "defaults": {
+    "max_questions": 3,
+    "expires_seconds": 420
+  },
+  "fields": [
+    {
+      "entity_key": "user.identity.preferred_name",
+      "field_path": "identity.preferred_name",
+      "expected_type": "text",
+      "priority": 1,
+      "question": "What name should I use for you?",
+      "claim_template": "My preferred name is {value}",
+      "evidence_template": "My preferred name is {value}"
+    },
+    {
+      "entity_key": "user.identity.location",
+      "field_path": "identity.location",
+      "expected_type": "location",
+      "priority": 2,
+      "question": "What city should I treat as your confirmed location?",
+      "claim_template": "My confirmed location is {value}",
+      "evidence_template": "My confirmed location is {value}"
+    },
+    {
+      "entity_key": "user.identity.birthdate",
+      "field_path": "identity.birthdate",
+      "expected_type": "date",
+      "priority": 3,
+      "question": "What is your birthdate (month/day/year)?",
+      "claim_template": "My birthday is {value}",
+      "evidence_template": "My birthday is {value}"
+    },
+    {
+      "entity_key": "user.relationship.girlfriend.name",
+      "field_path": "relationships.girlfriend_name",
+      "expected_type": "text",
+      "priority": 4,
+      "ask_if_any": ["user.relationship.girlfriend", "user.relationship.girlfriend.name"],
+      "question": "What is your girlfriend's name?",
+      "claim_template": "My girlfriend's name is {value}",
+      "evidence_template": "My girlfriend's name is {value}"
+    },
+    {
+      "entity_key": "user.relationship.girlfriend.birthdate",
+      "field_path": "relationships.girlfriend_birthdate",
+      "expected_type": "date",
+      "priority": 5,
+      "depends_on": ["relationships.girlfriend_name"],
+      "question": "What is {name}'s birthday (month/day/year)?",
+      "claim_template": "My girlfriend's birthday is {value}",
+      "evidence_template": "My girlfriend's birthday is {value}"
+    },
+    {
+      "entity_key": "user.relationship.son.name",
+      "field_path": "relationships.son_name",
+      "expected_type": "text",
+      "priority": 6,
+      "ask_if_any": ["user.relationship.son", "user.relationship.child", "user.relationship.son.name"],
+      "question": "What is your son's name?",
+      "claim_template": "My son's name is {value}",
+      "evidence_template": "My son's name is {value}"
+    }
+  ]
+}

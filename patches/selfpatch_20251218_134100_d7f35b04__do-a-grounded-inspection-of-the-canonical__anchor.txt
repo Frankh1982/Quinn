@@ -1,0 +1,13 @@
+Insert immediately AFTER this exact line: def ports_for_color(color: str) -> Tuple[int, int]:
+With this code:
+```python
+def _active_target_ports() -> Tuple[int, int]:
+    """
+    Read runtime/active.json and return the WS/HTTP ports for the active color.
+
+    This is intentionally tiny and dependency-free so it can be reused from a
+    future front-door router process without pulling in the full server stack.
+    """
+    active = read_active_color("blue")
+    return ports_for_color(active)
+```

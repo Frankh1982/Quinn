@@ -1,0 +1,71 @@
+Insert immediately AFTER this exact line: if __name__ == "__main__":
+With this code:
+```python
+    # Temporary helper script to create the blue variant server file for demo_project.
+    # This does NOT change this running server; it only writes a new raw file on disk.
+    try:
+        src_path = PROJECT_ROOT / "projects" / "demo_project" / "raw" / "1765903243_server.py"
+        dst_path = PROJECT_ROOT / "projects" / "demo_project" / "raw" / "server_blue.py"
+
+        if src_path.exists():
+            src_text = src_path.read_text(encoding="utf-8", errors="replace")
+
+            # Minimal, surgical transformation:
+            # For the main chat/answer WebSocket handler, wrap the model's response
+            # in a JSON object: {"answer": "<model_output>"}.
+            #
+            # We assume the green server has a line where it sends the model answer
+            # directly over the websocket, e.g.:
+            #     await websocket.send(user_answer)
+            #
+            # We convert ONLY that send call to:
+            #     await websocket.send(json.dumps({"answer": user_answer}))
+            #
+            # To keep this helper robust without parsing Python, we use a very
+            # narrow text replacement. If that pattern isn't found, we still
+            # emit the copied file untouched (no behavior difference).
+            modified = src_text
+
+            try:
+                # Ensure json is imported if not already present.
+                if "import json" not in modified:
+                    lines = modified.splitlines()
+                    inserted = False
+                    for idx, line in enumerate(lines):
+                        if line.startswith("import ") or line.startswith("from "):
+                            continue
+                        # insert import json right before the first non-import, non-empty line
+                        lines.insert(idx, "import json")
+                        inserted = True
+                        break
+                    if not inserted:
+                        lines.append("import json")
+                    modified = "\n".join(lines)
+
+                # Replace a very specific send call if present.
+                # This is intentionally conservative.
+                patterns = [
+                    "await websocket.send(user_answer)",
+                    "await websocket.send(last_full_answer_text)",
+                ]
+                repl_map = {
+                    "await websocket.send(user_answer)": 'await websocket.send(json.dumps({"answer": user_answer}))',
+                    "await websocket.send(last_full_answer_text)": 'await websocket.send(json.dumps({"answer": last_full_answer_text}))',
+                }
+                for pat in patterns:
+                    if pat in modified:
+                        modified = modified.replace(pat, repl_map[pat], 1)
+                        break
+            except Exception:
+                # On any error, fall back to exact copy (no behavior change).
+                modified = src_text
+
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            dst_path.write_text(modified, encoding="utf-8")
+
+            print(f"[BLUE_VARIANT_HELPER] Wrote blue server variant to: {dst_path}")
+        else:
+            print(f"[BLUE_VARIANT_HELPER] Source green server not found at: {src_path}")
+    except Exception as _e:
+        print(f"[BLUE_VARIANT_HELPER] Error while creating blue variant: {_e!r}")
+```

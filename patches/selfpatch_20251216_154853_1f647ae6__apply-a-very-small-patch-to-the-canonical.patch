@@ -1,0 +1,12 @@
+diff --git a/server.py b/server.py
+--- a/server.py
++++ b/server.py
+@@ -2999,7 +2999,7 @@
+     # Greeting
+     projects = list_existing_projects()
+     greet: List[str] = []
+-    greet.append("Lens-0 Project OS server connected.")
++    greet.append("[GREEN ACTIVE] Lens-0 Project OS server connected.")
+     greet.append(f"Current project for this connection: {current_project}")
+     greet.append(f"Current project goal: {_get_project_goal(current_project) or '(no goal set yet)'}")
+     if projects:
