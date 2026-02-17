@@ -268,6 +268,8 @@ from project_store import (
     read_bytes_file,
     atomic_write_text,
     atomic_write_bytes,
+    load_pdf_text,
+    load_image_ocr,
 )
 
 
@@ -4009,76 +4011,6 @@ async def _run_search_with_workspace(
         pass
 
     return best_ev, rel_path
-def load_pdf_text(path: Path, *, allow_ocr: bool = True, ocr_max_pages: int = 25) -> str:
-    try:
-        reader = PdfReader(str(path))
-        pages: List[str] = []
-        for page in reader.pages:
-            try:
-                pages.append(page.extract_text() or "")
-            except Exception as e:
-                pages.append(f"[PDF page extract error: {e!r}]")
-        text = "\n".join(pages).strip()
-        if text:
-            return text
-
-        # Best-effort OCR fallback for scanned PDFs (optional deps)
-        if not allow_ocr:
-            return ""
-        if convert_from_path is None or pytesseract is None:
-            return "(PDF error: no extractable text found; scanned PDF OCR not available (install pdf2image + poppler + pytesseract/tesseract).)"
-
-        try:
-            images = convert_from_path(str(path))
-            ocr_parts: List[str] = []
-            for i, im in enumerate(images[:max(1, int(ocr_max_pages or 25))]):  # safety cap
-                try:
-                    ocr = pytesseract.image_to_string(im) or ""
-                    ocr = ocr.strip()
-                    if ocr:
-                        ocr_parts.append(f"[PAGE {i+1}]\n{ocr}")
-                except Exception as e:
-                    ocr_parts.append(f"[PAGE {i+1} OCR error: {e!r}]")
-            ocr_text = "\n\n".join(ocr_parts).strip()
-            if not ocr_text:
-                return "(PDF error: no extractable text found; OCR ran but produced empty output.)"
-            return ocr_text
-        except Exception as e:
-            return f"(PDF error: no extractable text found; OCR fallback failed: {e!r})"
-    except Exception as e:
-        return f"(PDF error: {e!r})"
-
-# =============================================================================
-# Image OCR + caption helpers (Phase 1)
-# =============================================================================
-
-# IMAGE_SUFFIXES moved to lens0_config.py (imported above)
-
-def _mime_for_image_suffix(suffix: str) -> str:
-    # wrapper to keep call sites stable; implementation lives in lens0_config.py
-    return mime_for_image_suffix(suffix)
-
-def load_image_ocr(path: Path) -> Tuple[str, str]:
-    """
-    Return (ocr_text, note).
-    - Uses pytesseract + Pillow if installed.
-    - If not installed, returns empty text with a note.
-    """
-    if Image is None or pytesseract is None:
-        return "", "OCR not available (install Pillow + pytesseract + Tesseract binary)."
-
-    try:
-        img = Image.open(str(path))
-        # Small normalization: convert to RGB to avoid mode issues
-        if getattr(img, "mode", "") not in ("RGB", "L"):
-            img = img.convert("RGB")
-        text = (pytesseract.image_to_string(img) or "").strip()
-        if not text:
-            return "", "OCR ran but produced no text."
-        return text, "OCR extracted text successfully."
-    except Exception as e:
-        return "", f"OCR error: {e!r}"
-
 def call_openai_vision_caption(image_bytes: bytes, mime: str, *, prompt: str) -> Tuple[str, str]:
     """
     Return (caption, note).
