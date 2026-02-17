@@ -56,6 +56,8 @@ from project_store import (
     register_upload_batch,
     ANALYSIS_PIPELINE_VERSION,
     INGEST_PIPELINE_VERSION,
+    read_text_file,
+    read_bytes_file,
 )
 
 
@@ -80,27 +82,9 @@ def configure(
     _CLASSIFY_IMAGE_FN = classify_image_fn
 
 
-# ---------------------------------------------------------------------------
-# Small IO helpers (kept local to avoid importing server.py)
-# ---------------------------------------------------------------------------
-
 def now_iso() -> str:
     import time
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def read_text_file(path: Path, *, errors: str = "replace") -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors=errors)
-    except Exception:
-        return ""
-
-
-def read_bytes_file(path: Path) -> bytes:
-    try:
-        return path.read_bytes()
-    except Exception:
-        return b""
 
 
 # ---------------------------------------------------------------------------

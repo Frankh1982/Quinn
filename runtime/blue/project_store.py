@@ -17,6 +17,7 @@ Does NOT contain:
 from __future__ import annotations
 
 import hashlib
+import inspect
 import html
 import json
 import os
@@ -3726,6 +3727,25 @@ def file_sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data or b"").hexdigest()
 
 
+def _called_from_server_module() -> bool:
+    frame = None
+    try:
+        frame = inspect.currentframe()
+        if frame is None:
+            return False
+        caller = frame.f_back
+        if caller is None:
+            return False
+        return caller.f_globals.get("__name__") == "server"
+    except Exception:
+        return False
+    finally:
+        try:
+            del frame
+        except Exception:
+            pass
+
+
 def read_text_file(path: Path, *, errors: str = "replace") -> str:
     try:
         return path.read_text(encoding="utf-8", errors=errors)
@@ -3741,6 +3761,12 @@ def read_bytes_file(path: Path) -> bytes:
 
 
 def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8", errors: str = "strict") -> None:
+    rp = str(path).replace("\\", "/")
+    if "/_user/" in rp and _called_from_server_module():
+        raise RuntimeError(
+            "Refusing direct write to global user memory from server.py. "
+            "Use project_store as the single authority."
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(content or "", encoding=encoding, errors=errors)
@@ -3748,6 +3774,12 @@ def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8", erro
 
 
 def atomic_write_bytes(path: Path, content: bytes) -> None:
+    rp = str(path).replace("\\", "/")
+    if "/_user/" in rp and _called_from_server_module():
+        raise RuntimeError(
+            "Refusing direct write to global user memory from server.py. "
+            "Use project_store as the single authority."
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(content or b"")

@@ -263,6 +263,11 @@ from project_store import (
     save_user_pending_profile_question,
     clear_user_pending_profile_question,
     is_user_pending_profile_question_unexpired,
+    file_sha256_bytes,
+    read_text_file,
+    read_bytes_file,
+    atomic_write_text,
+    atomic_write_bytes,
 )
 
 
@@ -1490,14 +1495,6 @@ def get_user_projects_root(user: str) -> Path:
 
     return root
 
-def file_sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data or b"").hexdigest()
-
-def read_text_file(path: Path, *, errors: str = "replace") -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors=errors)
-    except Exception:
-        return ""
 def _wants_codehelp_code_review(user_msg: str) -> bool:
     m = (user_msg or "").lower()
     triggers = (
@@ -1702,59 +1699,6 @@ def _latest_artifact_path_by_name(project_full: str, name: str) -> str:
         return str(best.get("path") or "").strip()
     return ""
 
-
-def read_bytes_file(path: Path) -> bytes:
-    try:
-        return path.read_bytes()
-    except Exception:
-        return b""
-
-def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8", errors: str = "strict") -> None:
-    # HARD INVARIANT (must run BEFORE any delegation):
-    # server.py must never write under projects/<user>/_user/.
-    rp = str(path).replace("\\", "/")
-    if "/_user/" in rp:
-        raise RuntimeError(
-            "Refusing direct write to global user memory from server.py. "
-            "Use project_store as the single authority."
-        )
-
-    # Prefer canonical writer for all other paths.
-    try:
-        fn = getattr(project_store, "atomic_write_text", None)
-        if callable(fn):
-            fn(path, content, encoding=encoding, errors=errors)
-            return
-    except Exception:
-        pass
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content or "", encoding=encoding, errors=errors)
-    os.replace(tmp, path)
-
-def atomic_write_bytes(path: Path, content: bytes) -> None:
-    # HARD INVARIANT (must run BEFORE any delegation):
-    rp = str(path).replace("\\", "/")
-    if "/_user/" in rp:
-        raise RuntimeError(
-            "Refusing direct write to global user memory from server.py. "
-            "Use project_store as the single authority."
-        )
-
-    # Prefer canonical writer for all other paths.
-    try:
-        fn = getattr(project_store, "atomic_write_bytes", None)
-        if callable(fn):
-            fn(path, content)
-            return
-    except Exception:
-        pass
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(content or b"")
-    os.replace(tmp, path)
 
 def append_jsonl(path: Path, obj: dict) -> None:
     # HARD INVARIANT (must run BEFORE any delegation):
