@@ -3057,10 +3057,7 @@ def _detect_decision_candidate(msg: str) -> Tuple[str, float]:
     # Guard: evaluation/validation requests are NOT project decisions.
     # Example: "I want you to confirm that this idea is valid: ..."
     low = raw.lower()
-    if (
-        "i want you to" in low
-        and any(k in low for k in ("confirm", "validate", "tell me if", "am i right", "is this a good idea", "does this make sense"))
-    ):
+    if any(k in low for k in ("confirm", "validate", "tell me if", "am i right", "is this a good idea", "does this make sense")):
         return "", 0.0
 
 
@@ -5539,7 +5536,7 @@ def _extract_user_rules_from_message(user_msg: str) -> List[str]:
     low = raw.lower()
 
     # Fast gate: avoid parsing every message.
-    if not any(k in low for k in ("i want you to", "never", "don't", "do not", "only", "always")):
+    if not any(k in low for k in ("never", "don't", "do not", "only", "always")):
         return []
 
     # Split into candidate lines/sentences.
@@ -5565,21 +5562,11 @@ def _extract_user_rules_from_message(user_msg: str) -> List[str]:
 
         # Must look like an explicit rule about assistant behavior.
         if not any(c_low.startswith(pfx) for pfx in ("never", "don't", "do not", "only", "always", "please don't")):
-            if "i want you to" not in c_low:
-                continue
+            continue
 
         # Avoid capturing generic content rules unrelated to assistant behavior.
         if not any(w in c_low for w in ("you", "suggest", "say", "ask", "respond", "reply", "give me", "don't suggest", "never suggest")):
             continue
-
-        # Normalize common "I want you to ..." prefix.
-        if "i want you to" in c_low:
-            # Keep original casing but trim the prefix in a simple, deterministic way.
-            i = c_low.find("i want you to")
-            if i >= 0:
-                c0 = c0[i + len("i want you to"):].strip()
-                # Remove leading punctuation.
-                c0 = c0.lstrip(":").strip()
 
         # Hard caps to keep state small and stable.
         c0 = c0.strip()
@@ -8846,7 +8833,6 @@ def _is_file_referential_query(user_msg: str) -> bool:
     - Do NOT trigger on abstract commentary like:
         "models often fail to read the file carefully"
       even though it contains "the file" + "read".
-    - Require assistant-addressed intent (can you / please / show me / tell me / open / look at).
     - Do NOT trigger if an explicit filename is present.
     """
     msg = (user_msg or "").strip()
@@ -8878,29 +8864,6 @@ def _is_file_referential_query(user_msg: str) -> bool:
         has_deictic = False
 
     if not has_deictic:
-        return False
-
-    # Must look like the user is asking the assistant to do something with it.
-    # This blocks abstract statements that mention "read the file" generically.
-    assistant_addressed = (
-        ("can you" in low)
-        or ("could you" in low)
-        or ("would you" in low)
-        or ("please" in low)
-        or low.startswith((
-            "open",
-            "look at",
-            "use",
-            "show me",
-            "tell me",
-            "describe",
-            "summarize",
-            "review",
-            "analyze",
-            "read",
-        ))
-    )
-    if not assistant_addressed:
         return False
 
     # Action intent required (still conservative)

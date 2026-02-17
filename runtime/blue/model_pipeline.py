@@ -2440,9 +2440,6 @@ def _tier1_should_skip_sentence(s: str) -> bool:
     # Pure questions / imperatives are not durable personal facts
     if t.endswith("?"):
         return True
-    if low.startswith(("please ", "can you ", "could you ", "do ", "make ", "write ", "show ", "tell me ")):
-        return True
-
     # Very short fragments are usually not stable facts
     if len(t) < 4:
         return True
