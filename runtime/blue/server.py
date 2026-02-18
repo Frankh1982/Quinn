@@ -12578,7 +12578,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 # Purpose: allow the UI to request a contextual greeting AFTER it replays history.
                 if ftype == "greeting.request":
                     try:
-                        proj = str(frame_obj.get("project") or "").strip() or current_project
+                        target_project = str(frame_obj.get("project") or current_project).strip() or current_project
                         reason = str(frame_obj.get("reason") or "new_project").strip() or "new_project"
                         reason_l = reason.lower()
                         is_expert_switch = reason_l.startswith("expert_switch")
@@ -12600,10 +12600,19 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 except Exception:
                                     pass
 
-                        proj_short = path_engine.safe_project_name(proj, default_project_name=DEFAULT_PROJECT_NAME)
+                        proj_short = path_engine.safe_project_name(target_project, default_project_name=DEFAULT_PROJECT_NAME)
                         proj_full = _full(proj_short)
                         ensure_project_scaffold(proj_full)
                         history_state = _history_state_for_project(proj_full)
+                        if history_state != "empty":
+                            _TRACE.span(
+                                trace_id,
+                                "greeting.suppressed",
+                                proj_short,
+                                detail={"reason": "history_non_empty", "history_state": history_state},
+                                conn_id=conn_id,
+                            )
+                            continue
 
                         gmsg = ""
                         try:
@@ -12696,7 +12705,8 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 )
                     except Exception as e:
                         try:
-                            _TRACE.span(trace_id, "exception", current_project, detail={"where": "greeting.request", "err": type(e).__name__}, conn_id=conn_id)
+                            tp = str(frame_obj.get("project") or current_project).strip() or current_project
+                            _TRACE.span(trace_id, "exception", tp, detail={"where": "greeting.request", "err": type(e).__name__}, conn_id=conn_id)
                         except Exception:
                             pass
                     continue
