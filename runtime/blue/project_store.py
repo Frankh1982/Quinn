@@ -37,6 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from path_engine import now_iso
+
 import path_engine
 
 from lens0_config import (
@@ -3735,10 +3737,6 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(content or b"")
     os.replace(tmp, path)
-
-
-def now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 # -----------------------------------------------------------------------------

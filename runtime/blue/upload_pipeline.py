@@ -29,6 +29,8 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from path_engine import now_iso
+
 from lens0_config import TEXT_LIKE_SUFFIXES
 
 import visual_semantics
@@ -80,11 +82,6 @@ def configure(
     _PROJECT_ROOT = Path(project_root).resolve()
     _CAPTION_IMAGE_FN = caption_image_fn
     _CLASSIFY_IMAGE_FN = classify_image_fn
-
-
-def now_iso() -> str:
-    import time
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 # ---------------------------------------------------------------------------

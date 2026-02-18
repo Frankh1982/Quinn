@@ -224,6 +224,7 @@ def audit_event(project_full: str, event: Dict[str, Any]) -> None:
     except Exception:
         pass
 import path_engine
+from path_engine import now_iso
 from lens0_config import TEXT_LIKE_SUFFIXES, IMAGE_SUFFIXES, is_text_suffix, mime_for_image_suffix
 
 import project_store
@@ -1444,9 +1445,6 @@ def _maybe_start_profile_gap_questions(user: str) -> Tuple[bool, str]:
     q0 = items[0].get("question") if items else ""
     q0 = str(q0 or "").strip()
     return True, q0 or "What should I remember about you?"
-
-def now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 def safe_user_name(user: str) -> str:
     """

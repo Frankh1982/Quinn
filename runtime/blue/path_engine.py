@@ -8,6 +8,7 @@ Extracted from server.py (Step 6B).
 from __future__ import annotations
 
 import re
+import time
 from typing import List
 
 
@@ -34,3 +35,7 @@ def safe_filename(name: str) -> str:
     base = base.replace("\\", "/").split("/")[-1]
     base = re.sub(r"[^a-zA-Z0-9_.-]", "_", base)
     return base or "file.bin"
+
+
+def now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
