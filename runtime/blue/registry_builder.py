@@ -1670,10 +1670,8 @@ VERSION_STAMP = "registry_builder:2026-01-29C"
 
 
 def _read_text(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return ""
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
 
 
 def _safe_rel(root: Path, p: Path) -> str:

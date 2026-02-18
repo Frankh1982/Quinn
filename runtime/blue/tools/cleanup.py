@@ -5,9 +5,8 @@ import json
 import os
 import re
 
-import registry_builder
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+ROOT = os.getcwd()
 NOTES_DIR = os.path.join(ROOT, "notes")
 METRICS_PATH = os.path.join(NOTES_DIR, "METRICS.json")
 METRICS_DIFF_PATH = os.path.join(NOTES_DIR, "METRICS.diff.md")
@@ -80,7 +79,9 @@ def _iter_files(root: str) -> list:
     return files
 
 
-_read_text = registry_builder._read_text
+def _read_text(path: str) -> str:
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        return f.read()
 
 
 def _file_loc(text: str) -> int:
