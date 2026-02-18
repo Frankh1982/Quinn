@@ -513,6 +513,21 @@
       overflow: hidden;
       position: relative;
     }
+    #expertNotice {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      margin: 4px 6px 8px;
+      padding: 8px 10px;
+      background: rgba(16, 24, 40, 0.06);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      color: var(--text-main);
+      font-size: 12px;
+      font-weight: 700;
+      display: none;
+    }
+    #expertNotice.visible { display: block; }
 
     #log {
       flex: 1;
@@ -1450,6 +1465,7 @@
       </div>
 
       <div id="logContainer">
+        <div id="expertNotice"></div>
         <div id="log"></div>
         <div id="chatDropOverlay">
           Drop files here to upload into this chat.
@@ -2331,6 +2347,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     const chatDropOverlay = document.getElementById("chatDropOverlay");
     const projectNamePill = document.getElementById("projectNamePill");
     const logContainer = document.getElementById("logContainer");
+    const expertNotice = document.getElementById("expertNotice");
     const debugPanel = document.getElementById("debugPanel");
     const debugUsageSummary = document.getElementById("debugUsageSummary");
     const debugUsageDetails = document.getElementById("debugUsageDetails");
@@ -2350,6 +2367,8 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     const traceEvents = [];
     const TRACE_EVENT_LIMIT = 20;
     let serverTraceDump = [];
+    const EXPERT_NOTICE_MS = 2500;
+    let expertNoticeTimer = null;
 
     function newTraceId() {
       const rand = Math.floor(Math.random() * 0xffffffff).toString(16).slice(0, 8);
@@ -2373,6 +2392,33 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       traceEvents.push(evt);
       while (traceEvents.length > TRACE_EVENT_LIMIT) traceEvents.shift();
       if (traceVisible) renderTraceDebug();
+    }
+
+    function clearExpertNotice() {
+      try {
+        if (!expertNotice) return;
+        expertNotice.textContent = "";
+        expertNotice.classList.remove("visible");
+      } catch (_) {}
+      try {
+        if (expertNoticeTimer) clearTimeout(expertNoticeTimer);
+      } catch (_) {}
+      expertNoticeTimer = null;
+    }
+
+    function showExpertNotice(msg) {
+      try {
+        if (!expertNotice) return;
+        expertNotice.textContent = String(msg || "").trim();
+        if (!expertNotice.textContent) return;
+        expertNotice.classList.add("visible");
+      } catch (_) {}
+      try {
+        if (expertNoticeTimer) clearTimeout(expertNoticeTimer);
+      } catch (_) {}
+      expertNoticeTimer = setTimeout(() => {
+        clearExpertNotice();
+      }, EXPERT_NOTICE_MS);
     }
 
     function formatUsageLine(label, obj) {
@@ -2767,22 +2813,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
 
           closeExpertMenu();
 
-          // Ask the server for a contextual, tone-matched greeting on expert switch.
-          try {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              const p = String(currentProjectName || desiredProjectName || "default").trim() || "default";
-              const reason = `expert_switch:${ex.id}`;
-              const now = Date.now();
-              const k = `${p}|${reason}`;
-              const last = __greetReqLastAt[k] || 0;
-              if ((now - last) >= 4000) {
-                __greetReqLastAt[k] = now;
-                const frame = { v: 1, type: "greeting.request", project: p, reason };
-                attachTrace(frame, "send");
-                ws.send(JSON.stringify(frame));
-              }
-            }
-          } catch (_) {}
+          showExpertNotice(`Switched to: ${ex.label}`);
           _lastAckedExpert = activeExpert;
         });
 
@@ -4082,6 +4113,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       try {
         if (logEl) logEl.innerHTML = "";
       } catch (_) {}
+      clearExpertNotice();
     }
 
     function replayThreadToUI(projectName) {
@@ -4106,6 +4138,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       } else {
         clearChatUI();
       }
+      clearExpertNotice();
     }
 
     function threadPush(projectName, entry) {
