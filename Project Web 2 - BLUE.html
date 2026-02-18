@@ -1558,12 +1558,15 @@
     <div class="row" style="align-items:center;">
       <strong>Debug</strong>
       <div style="display:flex; gap:6px; align-items:center;">
-        <span class="muted">Ctrl+Shift+D</span>
+        <span class="muted">Ctrl+Shift+D / Ctrl+Shift+T</span>
+        <button id="debugTraceDumpBtn" class="small" type="button">Dump server trace</button>
         <button id="debugHideBtn" class="small" type="button">Hide</button>
       </div>
     </div>
     <div id="debugUsageSummary" style="margin-top:6px;"></div>
     <pre id="debugUsageDetails" class="muted"></pre>
+    <div id="debugTraceSummary" style="margin-top:8px;"></div>
+    <pre id="debugTraceDetails" class="muted"></pre>
   </div>
   <div id="projectMenuBackdrop"></div>
   <script>
@@ -1722,7 +1725,9 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
 
         try {
           // Preferred heartbeat frame (v1). Server replies with {v:1,type:"ws.pong"}.
-          ws.send(JSON.stringify({ v: 1, type: "ws.ping" }));
+        const frame = { v: 1, type: "ws.ping" };
+        attachTrace(frame, "send");
+        ws.send(JSON.stringify(frame));
         } catch (e) {
           console.warn("[WS] ping send failed", e);
         }
@@ -1980,14 +1985,16 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       // IMPORTANT: ws_commands requires explicit invocation ("!" or "/cmd"), otherwise it will fall through as normal chat.
       // Use canonical WS frame. Do NOT use send() here (we don't want a user bubble).
       try {
-        ws.send(JSON.stringify({
+        const frame = {
           v: 1,
           type: "chat.send",
           text: "!last answer",
           project: (currentProjectName || p || "default"),
           active_expert: (activeExpert || "default"),
           intent: {}
-        }));
+        };
+        attachTrace(frame, "send");
+        ws.send(JSON.stringify(frame));
       } catch (_) {}
     }
     // --- Startup ownership (restore owns startup) ---
@@ -2024,7 +2031,9 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       __threadGetInFlight[p] = true;
 
       try {
-        ws.send(JSON.stringify({ v: 1, type: "thread.get", project: p, reason: String(reason || "") }));
+        const frame = { v: 1, type: "thread.get", project: p, reason: String(reason || "") };
+        attachTrace(frame, "send");
+        ws.send(JSON.stringify(frame));
       } catch (_) {
         __threadGetInFlight[p] = false;
       }
@@ -2325,6 +2334,9 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     const debugPanel = document.getElementById("debugPanel");
     const debugUsageSummary = document.getElementById("debugUsageSummary");
     const debugUsageDetails = document.getElementById("debugUsageDetails");
+    const debugTraceSummary = document.getElementById("debugTraceSummary");
+    const debugTraceDetails = document.getElementById("debugTraceDetails");
+    const debugTraceDumpBtn = document.getElementById("debugTraceDumpBtn");
     const debugHideBtn = document.getElementById("debugHideBtn");
         // Copy-chat button removed (we use per-message ⧉ icon now).
     // Keep a safe null reference so legacy code below doesn't crash.
@@ -2332,7 +2344,36 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
 
     // --- Debug panel (hidden) ---
     let debugVisible = false;
+    let traceVisible = false;
     let lastUsageFrame = null;
+    let lastTraceId = "";
+    const traceEvents = [];
+    const TRACE_EVENT_LIMIT = 20;
+    let serverTraceDump = [];
+
+    function newTraceId() {
+      const rand = Math.floor(Math.random() * 0xffffffff).toString(16).slice(0, 8);
+      return `ui_${Date.now()}_${rand}`;
+    }
+
+    function attachTrace(frame, dir, overrideType, updateLast) {
+      if (!frame || typeof frame !== "object") return "";
+      const tid = String(frame.trace_id || "").trim() || newTraceId();
+      frame.trace_id = tid;
+      const typ = String(overrideType || frame.type || "").trim();
+      const ts = new Date().toISOString();
+      if (updateLast) lastTraceId = tid;
+      recordTraceEvent({ dir: dir || "", type: typ, trace_id: tid, ts });
+      try { console.log("[TRACE]", dir || "", typ, tid); } catch (_) {}
+      return tid;
+    }
+
+    function recordTraceEvent(evt) {
+      if (!evt || typeof evt !== "object") return;
+      traceEvents.push(evt);
+      while (traceEvents.length > TRACE_EVENT_LIMIT) traceEvents.shift();
+      if (traceVisible) renderTraceDebug();
+    }
 
     function formatUsageLine(label, obj) {
       if (!obj) return `${label}: (none)`;
@@ -2369,18 +2410,90 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       debugUsageDetails.textContent = modelLines.join("\\n");
     }
 
+    function renderTraceDebug() {
+      if (!debugPanel || !debugTraceSummary || !debugTraceDetails) return;
+      const t = String(lastTraceId || "").trim();
+      const lines = [];
+      lines.push(`trace_id: ${t || "(none)"}`);
+      lines.push(`events: ${traceEvents.length}`);
+      debugTraceSummary.textContent = lines.join("  |  ");
+      const out = [];
+      if (Array.isArray(serverTraceDump) && serverTraceDump.length) {
+        out.push("SERVER TRACE DUMP (most recent first)");
+        const dump = serverTraceDump.slice().reverse();
+        for (const ev of dump) {
+          if (!ev || typeof ev !== "object") continue;
+          const ts = (ev.ts_monotonic == null) ? "" : String(ev.ts_monotonic);
+          const typ = String(ev.event_type || "");
+          const proj = String(ev.project || "");
+          const cnt = (ev.count == null) ? "" : String(ev.count);
+          let det = "";
+          try {
+            det = ev.detail ? JSON.stringify(ev.detail) : "";
+          } catch (_) {
+            det = "";
+          }
+          out.push(`${ts} ${typ} ${proj} ${cnt}${det ? " " + det : ""}`.trim());
+        }
+        out.push("");
+      }
+      out.push("RECENT TRACE (last 20)");
+      for (const ev of traceEvents) {
+        const dir = ev.dir || "";
+        const typ = ev.type || "";
+        const tid = ev.trace_id || "";
+        const ts = ev.ts || "";
+        out.push(`${dir} ${typ} ${tid} ${ts}`.trim());
+      }
+      debugTraceDetails.textContent = out.join("\\n");
+    }
+
+    function _setDebugPanelVisible() {
+      if (!debugPanel) return;
+      debugPanel.classList.toggle("visible", !!(debugVisible || traceVisible));
+    }
+
     function toggleDebugPanel(force) {
       if (!debugPanel) return;
       debugVisible = (typeof force === "boolean") ? force : !debugVisible;
-      debugPanel.classList.toggle("visible", debugVisible);
+      _setDebugPanelVisible();
       if (debugVisible) renderUsageDebug();
     }
 
-    if (debugHideBtn) debugHideBtn.addEventListener("click", () => toggleDebugPanel(false));
+    function toggleTracePanel(force) {
+      if (!debugPanel) return;
+      traceVisible = (typeof force === "boolean") ? force : !traceVisible;
+      _setDebugPanelVisible();
+      if (traceVisible) renderTraceDebug();
+    }
+
+    function requestTraceDump() {
+      try {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const frame = { v: 1, type: "trace.dump", last: 200 };
+        attachTrace(frame, "send");
+        ws.send(JSON.stringify(frame));
+      } catch (_) {}
+    }
+
+    if (debugHideBtn) debugHideBtn.addEventListener("click", () => {
+      debugVisible = false;
+      traceVisible = false;
+      _setDebugPanelVisible();
+    });
+    if (debugTraceDumpBtn) debugTraceDumpBtn.addEventListener("click", () => requestTraceDump());
     document.addEventListener("keydown", (ev) => {
       if (ev.ctrlKey && ev.shiftKey && (ev.key === "D" || ev.key === "d")) {
         ev.preventDefault();
         toggleDebugPanel();
+      }
+      if (ev.ctrlKey && ev.shiftKey && (ev.key === "T" || ev.key === "t")) {
+        ev.preventDefault();
+        toggleTracePanel();
+      }
+      if (ev.ctrlKey && ev.shiftKey && (ev.key === "Y" || ev.key === "y")) {
+        ev.preventDefault();
+        requestTraceDump();
       }
     });
 
@@ -2664,7 +2777,9 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
               const last = __greetReqLastAt[k] || 0;
               if ((now - last) >= 4000) {
                 __greetReqLastAt[k] = now;
-                ws.send(JSON.stringify({ v: 1, type: "greeting.request", project: p, reason }));
+                const frame = { v: 1, type: "greeting.request", project: p, reason };
+                attachTrace(frame, "send");
+                ws.send(JSON.stringify(frame));
               }
             }
           } catch (_) {}
@@ -2750,14 +2865,16 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
             if (ws && ws.readyState === WebSocket.OPEN) {
               // Use canonical WS frame (no user bubble).
               try {
-                ws.send(JSON.stringify({
+                const frame = {
                   v: 1,
                   type: "chat.send",
                   text: "!switch project: default",
                   project: (currentProjectName || desiredProjectName || "default"),
                   active_expert: (activeExpert || "default"),
                   intent: {}
-                }));
+                };
+                attachTrace(frame, "send");
+                ws.send(JSON.stringify(frame));
               } catch (_) {}
             }
 
@@ -2832,14 +2949,16 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
             // Switch by name (never index)
             // Use canonical WS frame (no user bubble).
             try {
-              ws.send(JSON.stringify({
+              const frame = {
                 v: 1,
                 type: "chat.send",
                 text: "!switch project: " + name,
                 project: (currentProjectName || desiredProjectName || "default"),
                 active_expert: (activeExpert || "default"),
                 intent: {}
-              }));
+              };
+              attachTrace(frame, "send");
+              ws.send(JSON.stringify(frame));
             } catch (_) {}
 
             showThinking();
@@ -4424,14 +4543,16 @@ function createNewChat(opts = {}) {
     try { ensureThreadVisibleForProject(name); } catch (_) {}
 
     try {
-      ws.send(JSON.stringify({
+      const frame = {
         v: 1,
         type: "chat.send",
         text: "!switch project: " + name,
         project: (currentProjectName || desiredProjectName || "default"),
         active_expert: (activeExpert || "default"),
         intent: {}
-      }));
+      };
+      attachTrace(frame, "send");
+      ws.send(JSON.stringify(frame));
     } catch (_) {}
 
     showThinking();
@@ -4712,14 +4833,16 @@ function updateProjectName(name) {
             if (!alreadyThere) {
               // Use canonical WS frame (no user bubble).
               try {
-                ws.send(JSON.stringify({
+                const frame = {
                   v: 1,
                   type: "chat.send",
                   text: "!switch project: " + desired,
                   project: desired,
                   active_expert: (activeExpert || "default"),
                   intent: { startup: "restore" }
-                }));
+                };
+                attachTrace(frame, "send");
+                ws.send(JSON.stringify(frame));
               } catch (_) {}
             }
 
@@ -4870,6 +4993,14 @@ function updateProjectName(name) {
               // Preferred framed messages
               if (obj.v === 1 && typeof obj.type === "string") {
                 const t = obj.type;
+                try {
+                  const tid = String(obj.trace_id || "").trim();
+                  if (tid) {
+                    lastTraceId = tid;
+                    recordTraceEvent({ dir: "recv", type: t, trace_id: tid, ts: new Date().toISOString() });
+                    console.log("[TRACE] recv", t, tid);
+                  }
+                } catch (_) {}
                  // Heartbeat pong (framed)
                  if (t === "ws.pong") {
                    wsLastPongAt = Date.now();
@@ -4898,6 +5029,13 @@ function updateProjectName(name) {
                 if (t === "debug.usage") {
                   lastUsageFrame = obj;
                   if (debugVisible) renderUsageDebug();
+                  return; // critical: stop chat append
+                }
+                if (t === "trace.dump") {
+                  try {
+                    serverTraceDump = Array.isArray(obj.events) ? obj.events : [];
+                    if (traceVisible) renderTraceDebug();
+                  } catch (_) {}
                   return; // critical: stop chat append
                 }
 
@@ -4935,7 +5073,9 @@ function updateProjectName(name) {
                         if ((now - last) >= 6000) {
                           __greetReqLastAt[p] = now;
                           const reason = (msgs.length === 0) ? "new_project" : "switch_project";
-                          ws.send(JSON.stringify({ v: 1, type: "greeting.request", project: p, reason }));
+                          const frame = { v: 1, type: "greeting.request", project: p, reason };
+                          attachTrace(frame, "send");
+                          ws.send(JSON.stringify(frame));
                         }
                       }
                     } catch (_) {}
@@ -5374,6 +5514,7 @@ function updateProjectName(name) {
           active_expert: (activeExpert || "default"),
           intent: {}
         };
+        attachTrace(frame, "send");
         ws.send(JSON.stringify(frame));
         showThinking();
       } catch (e) {
@@ -5636,14 +5777,16 @@ function updateProjectName(name) {
             // Switch by name (not by index)
             // Use canonical WS frame (no user bubble).
             try {
-              ws.send(JSON.stringify({
+              const frame = {
                 v: 1,
                 type: "chat.send",
                 text: "!switch project: " + name,
                 project: (currentProjectName || desiredProjectName || "default"),
                 active_expert: (activeExpert || "default"),
                 intent: {}
-              }));
+              };
+              attachTrace(frame, "send");
+              ws.send(JSON.stringify(frame));
             } catch (_) {}
 
             showThinking();
@@ -5790,6 +5933,7 @@ function updateProjectName(name) {
             orig_name: String(it.originalName || it.key || "").trim(),
             force: !!opts.force
           };
+          attachTrace(payload, "send");
           ws.send(JSON.stringify(payload));
           showThinking();
         } catch (_) {}
