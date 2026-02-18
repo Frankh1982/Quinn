@@ -35,9 +35,106 @@ import subprocess
 import sys
 import uuid
 import contextvars
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+# ---------------------------------------------------------------------------
+# Trace Spine (low-overhead, explicit spans only)
+# ---------------------------------------------------------------------------
+def get_ts_monotonic() -> float:
+    try:
+        return float(time.monotonic())
+    except Exception:
+        return 0.0
+
+class TraceSpine:
+    def __init__(self, max_events: int = 2000) -> None:
+        self._counts: Dict[str, Dict[str, int]] = {}
+        self._events = deque(maxlen=max_events if max_events and max_events > 0 else 2000)
+
+    def new_trace(self, action: str, conn_id: str, project: str, trace_id: Optional[str] = None, detail: Optional[Dict[str, Any]] = None) -> str:
+        try:
+            tid = str(trace_id or "").strip() or f"trace_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+            if tid not in self._counts:
+                self._counts[tid] = {}
+            if action:
+                self.span(tid, action, project, detail=detail, conn_id=conn_id)
+            return tid
+        except Exception:
+            return str(trace_id or "").strip() or f"trace_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+
+    def span(self, trace_id: str, event_type: str, project: str, detail: Optional[Dict[str, Any]] = None, conn_id: str = "") -> None:
+        try:
+            tid = str(trace_id or "").strip()
+            et = str(event_type or "").strip()
+            if not tid or not et:
+                return
+            c = self._counts.get(tid)
+            if not isinstance(c, dict):
+                c = {}
+            n = int(c.get(et) or 0) + 1
+            c[et] = n
+            self._counts[tid] = c
+
+            obj: Dict[str, Any] = {
+                "trace_id": tid,
+                "conn_id": str(conn_id or ""),
+                "project": str(project or ""),
+                "event_type": et,
+                "ts_monotonic": get_ts_monotonic(),
+                "count": n,
+            }
+            if isinstance(detail, dict) and detail:
+                obj["detail"] = detail
+            self._events.append(obj)
+            print(json.dumps(obj, ensure_ascii=False))
+        except Exception:
+            pass
+
+    def summary(self, trace_id: str, conn_id: str = "", project: str = "") -> None:
+        try:
+            tid = str(trace_id or "").strip()
+            if not tid:
+                return
+            c = self._counts.get(tid)
+            if not isinstance(c, dict) or not c:
+                return
+            obj = {
+                "trace_id": tid,
+                "conn_id": str(conn_id or ""),
+                "project": str(project or ""),
+                "event_type": "trace.summary",
+                "ts_monotonic": get_ts_monotonic(),
+                "count": 1,
+                "detail": {"counts": c},
+            }
+            self._events.append(obj)
+            print(json.dumps(obj, ensure_ascii=False))
+        except Exception:
+            pass
+
+    def dump_events(self, last: int = 200, trace_id: str = "") -> List[Dict[str, Any]]:
+        try:
+            n = int(last or 0)
+        except Exception:
+            n = 200
+        if n <= 0:
+            n = 200
+        if n > 500:
+            n = 500
+        try:
+            tid = str(trace_id or "").strip()
+            items = list(self._events)
+            if tid:
+                items = [e for e in items if isinstance(e, dict) and str(e.get("trace_id") or "") == tid]
+            if n and len(items) > n:
+                items = items[-n:]
+            return items
+        except Exception:
+            return []
+
+_TRACE = TraceSpine()
 # -----------------------------------------------------------------------------
 # Per-turn audit trace id (context-local via asyncio ContextVar)
 # -----------------------------------------------------------------------------
@@ -9540,6 +9637,8 @@ def _tier2g_promote_global_memory_or_raise(user: str, user_msg: str) -> Dict[str
 
 async def handle_connection(websocket, path=None):  # path optional for websockets compatibility
     print("[WS] Client connected")
+    conn_id = f"c_{uuid.uuid4().hex[:10]}"
+    auth_source = "cookie"
 
     # Very simple cookie parse (no security claims; just isolation)
     cookie_header = ""
@@ -9589,6 +9688,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
             if q_user and q_pass and USERS.get(q_user) == q_pass:
                 user = q_user
+                auth_source = "query"
                 print(f"[WS] Auth via querystring: user={user!r}")
             else:
                 # Debug line so you can see what the server *actually* received
@@ -9647,6 +9747,11 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
     current_project_full = path_engine.safe_project_name(f"{user}/{current_project}", default_project_name=DEFAULT_PROJECT_NAME)
     ensure_project_scaffold(current_project_full)
+    try:
+        _TRACE.new_trace("ws.connect", conn_id, current_project)
+        _TRACE.new_trace("auth.login", conn_id, current_project, detail={"source": auth_source})
+    except Exception:
+        pass
 
     # Deterministic couples bootstrap (no model call, no user setup)
     # Couples accounts must always have user-scoped global memory scaffolded on disk.
@@ -9762,6 +9867,30 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             return obj
         except Exception:
             return {"batches": {}}
+
+    def _history_state_for_project(project_full: str, msgs: Optional[List[Dict[str, Any]]] = None) -> str:
+        try:
+            if isinstance(msgs, list):
+                return "empty" if len(msgs) == 0 else "non_empty"
+            m = read_chat_log_messages_for_ui(project_full, max_messages=1)
+            return "empty" if not m else "non_empty"
+        except Exception:
+            return "unknown"
+
+    def _greeting_should_emit(*, conn: str, project_full: str, history_state: str, reason: str, is_expert_switch: bool) -> Tuple[bool, str]:
+        try:
+            hs = str(history_state or "").strip() or "unknown"
+            if hs == "non_empty" and not is_expert_switch:
+                return False, "history_non_empty"
+            key = f"{conn}|{project_full}|{hs}"
+            now_ts = time.monotonic()
+            last_ts = float(_greet_dedupe.get(key) or 0.0)
+            if last_ts and (now_ts - last_ts) < float(_greet_dedupe_window_s):
+                return False, "dedupe"
+            _greet_dedupe[key] = now_ts
+            return True, ""
+        except Exception:
+            return True, ""
 
     def _extract_zip_name_from_text(s: str) -> str:
         try:
@@ -10167,6 +10296,9 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
     greeted_projects: set[str] = set()
     # Allow expert-switch greetings without colliding with project-entry greet.
     greeted_expert_switch: set[str] = set()
+    # Short-window greeting idempotency guard: (conn_id, project, history_state) -> last_ts
+    _greet_dedupe: Dict[str, float] = {}
+    _greet_dedupe_window_s = 8.0
     # Analysis backfill (automatic, debounced)
     last_backfill_ts = 0.0
     backfill_inflight = False
@@ -12184,18 +12316,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         async for raw_msg in websocket:
             # Per-turn flag: set True only when THIS incoming message actually changes projects.
             project_changed = False
-            # Per-turn audit trace id (context-local; safe under asyncio tasks)
-            try:
-                _trace_id = f"turn_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-                _AUDIT_TRACE_ID.set(_trace_id)
-                # Reset per-turn decision context (so prior turns can't leak into this audit row)
-                _audit_ctx_reset()                
-            except Exception:
-                pass
-            try:
-                _usage_ctx_reset()
-            except Exception:
-                pass
             # ----------------------------
             # WS Frame Envelope (v1)
             # Accept:
@@ -12204,6 +12324,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             # ----------------------------
             frame_obj: Dict[str, Any] = {}
             is_frame = False
+            ftype = ""
 
             try:
                 if isinstance(raw_msg, str) and raw_msg.strip().startswith("{"):
@@ -12217,6 +12338,60 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             if is_frame:
                 ftype = str(frame_obj.get("type") or "").strip()
 
+            action_name = "ws.recv"
+            if is_frame and ftype:
+                if ftype in ("thread.get", "greeting.request", "chat.send", "upload.synthesize", "ws.ping"):
+                    action_name = ftype
+            elif not is_frame:
+                action_name = "chat.send"
+
+            action_detail: Optional[Dict[str, Any]] = None
+            if is_frame and ftype in ("thread.get", "greeting.request"):
+                try:
+                    action_detail = {
+                        "project": str(frame_obj.get("project") or "").strip(),
+                        "reason": str(frame_obj.get("reason") or "").strip(),
+                    }
+                except Exception:
+                    action_detail = None
+            elif is_frame and ftype == "chat.send":
+                try:
+                    action_detail = {
+                        "project": str(frame_obj.get("project") or "").strip(),
+                    }
+                except Exception:
+                    action_detail = None
+
+            trace_id = ""
+            if is_frame:
+                trace_id = str(frame_obj.get("trace_id") or "").strip()
+            if not trace_id:
+                trace_id = _TRACE.new_trace(action_name, conn_id, current_project, detail=action_detail)
+            else:
+                trace_id = _TRACE.new_trace(action_name, conn_id, current_project, trace_id=trace_id, detail=action_detail)
+
+            try:
+                _AUDIT_TRACE_ID.set(trace_id)
+                # Reset per-turn decision context (so prior turns can't leak into this audit row)
+                _audit_ctx_reset()
+            except Exception:
+                pass
+            try:
+                _usage_ctx_reset()
+            except Exception:
+                pass
+
+            try:
+                _TRACE.span(
+                    trace_id,
+                    "ws.recv",
+                    current_project,
+                    detail={"type": ftype or ("raw" if isinstance(raw_msg, str) else "binary")},
+                    conn_id=conn_id,
+                )
+            except Exception:
+                pass
+            if is_frame:
                 # UI heartbeat: allow legacy ping/pong unchanged
                 if ftype == "ws.ping":
                     try:
@@ -12228,38 +12403,145 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 # Upload status frames are server->UI only; ignore if received from client
                 if ftype == "upload.status":
                     continue
+                # Trace dump (debug only)
+                if ftype == "trace.dump":
+                    try:
+                        if DEBUG_USAGE_ENABLED:
+                            last_req = frame_obj.get("last", 200)
+                            try:
+                                last_n = int(last_req)
+                            except Exception:
+                                last_n = 200
+                            if last_n > 500:
+                                last_n = 500
+                            if last_n <= 0:
+                                last_n = 200
+                            trace_filter = str(frame_obj.get("trace_id") or "").strip()
+                            events = _TRACE.dump_events(last=last_n, trace_id=trace_filter)
+                        else:
+                            events = []
+                            trace_filter = str(frame_obj.get("trace_id") or "").strip()
+                        payload = {
+                            "v": 1,
+                            "type": "trace.dump",
+                            "conn_id": conn_id,
+                            "project": current_project,
+                            "events": events,
+                        }
+                        if trace_filter:
+                            payload["trace_id"] = trace_filter
+                        await websocket.send(json.dumps(payload, ensure_ascii=False))
+                    except Exception:
+                        pass
+                    continue
 
                 # UI thread history request (token-free): return canonical state/chat_log.jsonl
                 if ftype == "thread.get":
                     try:
+                        try:
+                            _TRACE.span(
+                                trace_id,
+                                "thread.get.start",
+                                current_project,
+                                detail={"project": str(frame_obj.get("project") or "").strip(), "reason": str(frame_obj.get("reason") or "").strip()},
+                                conn_id=conn_id,
+                            )
+                        except Exception:
+                            pass
                         proj_req = str(frame_obj.get("project") or "").strip()
                         proj_short = path_engine.safe_project_name(proj_req, default_project_name=DEFAULT_PROJECT_NAME) if proj_req else current_project
                         proj_full = _full(proj_short)
 
                         # Make thread.get authoritative for current project (align server state)
                         if proj_short != current_project:
+                            try:
+                                _TRACE.span(
+                                    trace_id,
+                                    "project.switch.start",
+                                    proj_short,
+                                    detail={"from": current_project, "to": proj_short, "reason": "thread.get"},
+                                    conn_id=conn_id,
+                                )
+                            except Exception:
+                                pass
+                            old_short = current_project
                             old_full = current_project_full
                             current_project = proj_short
                             current_project_full = proj_full
                             _ws_move_client(old_full, current_project_full, websocket)
+                            try:
+                                _TRACE.span(
+                                    trace_id,
+                                    "project.switch.end",
+                                    current_project,
+                                    detail={"from": old_short, "to": proj_short, "reason": "thread.get"},
+                                    conn_id=conn_id,
+                                )
+                            except Exception:
+                                pass
                         _save_last_project(user, proj_short)
 
                         ensure_project_scaffold(proj_full)
 
                         msgs = read_chat_log_messages_for_ui(proj_full, max_messages=800)
+                        history_state = _history_state_for_project(proj_full, msgs)
                         payload = {
                             "v": 1,
                             "type": "thread.history",
                             "project": str(proj_short),
                             "messages": msgs,
+                            "trace_id": trace_id,
                         }
                         await websocket.send(json.dumps(payload, ensure_ascii=False))
+                        try:
+                            _TRACE.span(
+                                trace_id,
+                                "thread.history",
+                                proj_short,
+                                detail={"history_state": history_state},
+                                conn_id=conn_id,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            _TRACE.span(
+                                trace_id,
+                                "thread.get.end",
+                                proj_short,
+                                detail={"history_state": history_state},
+                                conn_id=conn_id,
+                            )
+                        except Exception:
+                            pass
 
                         # FOUNDATIONAL:
                         # After the UI replays history for a project, emit a human greeting immediately.
                         # De-dupe per project so connect/thread.get/greeting.request can't double-fire.
                         try:
-                            if proj_full not in greeted_projects:
+                            should_emit, sup_reason = _greeting_should_emit(
+                                conn=conn_id,
+                                project_full=proj_full,
+                                history_state=history_state,
+                                reason="thread_get",
+                                is_expert_switch=False,
+                            )
+                            if not should_emit:
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.suppressed",
+                                    proj_short,
+                                    detail={"reason": sup_reason or "dedupe", "history_state": history_state},
+                                    conn_id=conn_id,
+                                )
+                            elif proj_full in greeted_projects:
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.suppressed",
+                                    proj_short,
+                                    detail={"reason": "project_dedupe", "history_state": history_state},
+                                    conn_id=conn_id,
+                                )
+                            else:
                                 greeted_projects.add(proj_full)
                                 gmsg = await build_contextual_greeting(
                                     user=user,
@@ -12270,14 +12552,27 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 if not (gmsg or "").strip():
                                     gmsg = "What are we working on today?"
                                 await websocket.send(str(gmsg).strip())
-                        except Exception:
-                            pass
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.emit",
+                                    proj_short,
+                                    detail={"reason": "thread_get", "history_state": history_state},
+                                    conn_id=conn_id,
+                                )
+                        except Exception as e:
+                            try:
+                                _TRACE.span(trace_id, "exception", proj_short, detail={"where": "thread.get.greeting", "err": type(e).__name__}, conn_id=conn_id)
+                            except Exception:
+                                pass
                         # NOTE:
                         # Greeting is already emitted above with de-duplication.
 
-                    except Exception:
+                    except Exception as e:
                         # fail silent: don't poison the session
-                        pass
+                        try:
+                            _TRACE.span(trace_id, "exception", current_project, detail={"where": "thread.get", "err": type(e).__name__}, conn_id=conn_id)
+                        except Exception:
+                            pass
                     continue
                 # UI greeting request (LLM-based, bounded)
                 # Purpose: allow the UI to request a contextual greeting AFTER it replays history.
@@ -12308,6 +12603,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         proj_short = path_engine.safe_project_name(proj, default_project_name=DEFAULT_PROJECT_NAME)
                         proj_full = _full(proj_short)
                         ensure_project_scaffold(proj_full)
+                        history_state = _history_state_for_project(proj_full)
 
                         gmsg = ""
                         try:
@@ -12317,7 +12613,11 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 project_short=proj_short,
                                 reason=reason,
                             )
-                        except Exception:
+                        except Exception as e:
+                            try:
+                                _TRACE.span(trace_id, "exception", proj_short, detail={"where": "greeting.request.build", "err": type(e).__name__}, conn_id=conn_id)
+                            except Exception:
+                                pass
                             gmsg = ""
 
                         if not (gmsg or "").strip():
@@ -12328,13 +12628,77 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             k = f"{proj_full}|{reason_l}"
                             if k not in greeted_expert_switch:
                                 greeted_expert_switch.add(k)
-                                await websocket.send(str(gmsg).strip())
+                                should_emit, sup_reason = _greeting_should_emit(
+                                    conn=conn_id,
+                                    project_full=proj_full,
+                                    history_state=history_state,
+                                    reason=reason,
+                                    is_expert_switch=True,
+                                )
+                                if not should_emit:
+                                    _TRACE.span(
+                                        trace_id,
+                                        "greeting.suppressed",
+                                        proj_short,
+                                        detail={"reason": sup_reason or "dedupe", "history_state": history_state},
+                                        conn_id=conn_id,
+                                    )
+                                else:
+                                    await websocket.send(str(gmsg).strip())
+                                    _TRACE.span(
+                                        trace_id,
+                                        "greeting.emit",
+                                        proj_short,
+                                        detail={"reason": reason, "history_state": history_state},
+                                        conn_id=conn_id,
+                                    )
+                            else:
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.suppressed",
+                                    proj_short,
+                                    detail={"reason": "expert_switch_dedupe", "history_state": history_state},
+                                    conn_id=conn_id,
+                                )
                         else:
-                            if proj_full not in greeted_projects:
+                            should_emit, sup_reason = _greeting_should_emit(
+                                conn=conn_id,
+                                project_full=proj_full,
+                                history_state=history_state,
+                                reason=reason,
+                                is_expert_switch=False,
+                            )
+                            if not should_emit:
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.suppressed",
+                                    proj_short,
+                                    detail={"reason": sup_reason or "dedupe", "history_state": history_state},
+                                    conn_id=conn_id,
+                                )
+                            elif proj_full in greeted_projects:
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.suppressed",
+                                    proj_short,
+                                    detail={"reason": "project_dedupe", "history_state": history_state},
+                                    conn_id=conn_id,
+                                )
+                            else:
                                 greeted_projects.add(proj_full)
                                 await websocket.send(str(gmsg).strip())
-                    except Exception:
-                        pass
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.emit",
+                                    proj_short,
+                                    detail={"reason": reason, "history_state": history_state},
+                                    conn_id=conn_id,
+                                )
+                    except Exception as e:
+                        try:
+                            _TRACE.span(trace_id, "exception", current_project, detail={"where": "greeting.request", "err": type(e).__name__}, conn_id=conn_id)
+                        except Exception:
+                            pass
                     continue
                 # UI upload synthesis request (no user-visible "insert to chat" step)
                 if ftype == "upload.synthesize":
@@ -12489,10 +12853,31 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             _save_last_project(user, current_project)
 
                             if current_project != old_short:
+                                try:
+                                    _TRACE.span(
+                                        trace_id,
+                                        "project.switch.start",
+                                        current_project,
+                                        detail={"from": old_short, "to": current_project, "reason": "chat.send"},
+                                        conn_id=conn_id,
+                                    )
+                                except Exception:
+                                    pass
                                 project_changed = True
 
                             ensure_project_scaffold(current_project_full)
                             _ws_move_client(old_full, current_project_full, websocket)
+                            if current_project != old_short:
+                                try:
+                                    _TRACE.span(
+                                        trace_id,
+                                        "project.switch.end",
+                                        current_project,
+                                        detail={"from": old_short, "to": current_project, "reason": "chat.send"},
+                                        conn_id=conn_id,
+                                    )
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
 
@@ -12509,11 +12894,45 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                     project_short=current_project,
                                     reason="switch_project",
                                 )
-                                if gmsg and (current_project_full not in greeted_projects):
+                                history_state = _history_state_for_project(current_project_full)
+                                should_emit, sup_reason = _greeting_should_emit(
+                                    conn=conn_id,
+                                    project_full=current_project_full,
+                                    history_state=history_state,
+                                    reason="switch_project",
+                                    is_expert_switch=False,
+                                )
+                                if not should_emit:
+                                    _TRACE.span(
+                                        trace_id,
+                                        "greeting.suppressed",
+                                        current_project,
+                                        detail={"reason": sup_reason or "dedupe", "history_state": history_state},
+                                        conn_id=conn_id,
+                                    )
+                                elif current_project_full in greeted_projects:
+                                    _TRACE.span(
+                                        trace_id,
+                                        "greeting.suppressed",
+                                        current_project,
+                                        detail={"reason": "project_dedupe", "history_state": history_state},
+                                        conn_id=conn_id,
+                                    )
+                                elif gmsg:
                                     greeted_projects.add(current_project_full)
                                     await websocket.send(gmsg)
-                            except Exception:
-                                pass
+                                    _TRACE.span(
+                                        trace_id,
+                                        "greeting.emit",
+                                        current_project,
+                                        detail={"reason": "switch_project", "history_state": history_state},
+                                        conn_id=conn_id,
+                                    )
+                            except Exception as e:
+                                try:
+                                    _TRACE.span(trace_id, "exception", current_project, detail={"where": "chat.send.switch_greeting", "err": type(e).__name__}, conn_id=conn_id)
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
 
@@ -13129,7 +13548,11 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                     user_text=cand,
                                     active_topic_text=active_topic_text,
                                 )
-                        except Exception:
+                        except Exception as e:
+                            try:
+                                _TRACE.span(trace_id, "exception", current_project, detail={"where": "routing.classify.llm", "err": type(e).__name__}, conn_id=conn_id)
+                            except Exception:
+                                pass
                             cont_obj = {}
 
                         cont_label = ""
@@ -13208,6 +13631,17 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             except Exception:
                                 pass
 
+                            try:
+                                _TRACE.span(
+                                    trace_id,
+                                    "routing.classify",
+                                    current_project,
+                                    detail={"continuation": bool(cont_label != "new_topic"), "reason": "llm_c11", "label": cont_label},
+                                    conn_id=conn_id,
+                                )
+                            except Exception:
+                                pass
+
                         else:
                             # Fallback: deterministic continuation heuristics.
                             low_cand = cand.lower().strip()
@@ -13257,6 +13691,17 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             except Exception:
                                 continuity_label = "same_topic"
                             allow_history_in_lookup = True
+                            try:
+                                cont_reason = "fallback_pronoun" if pronoun_followup else ("fallback_picture" if picture_request else "fallback_heuristic")
+                                _TRACE.span(
+                                    trace_id,
+                                    "routing.classify",
+                                    current_project,
+                                    detail={"continuation": bool(continuity_label != "new_topic"), "reason": cont_reason, "label": continuity_label},
+                                    conn_id=conn_id,
+                                )
+                            except Exception:
+                                pass
 
                             # Update "last real question" only when this turn isn't generic/continuation.
                             if cand and (not continuation_op) and (not _is_generic_search_query(cand)):
@@ -13371,14 +13816,45 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             # No-op: avoid redundant switch churn or greeting spam.
                             _save_last_project(user, current_project)
                             continue
+                        old_short = current_project
                         old_full = current_project_full
+                        try:
+                            _TRACE.span(
+                                trace_id,
+                                "project.switch.start",
+                                sel,
+                                detail={"from": old_short, "to": sel, "reason": "command.select"},
+                                conn_id=conn_id,
+                            )
+                        except Exception:
+                            pass
                         current_project = sel
                         current_project_full = _full(current_project)
                         ensure_project_scaffold(current_project_full)
                         _ws_move_client(old_full, current_project_full, websocket)
+                        try:
+                            _TRACE.span(
+                                trace_id,
+                                "project.switch.end",
+                                current_project,
+                                detail={"from": old_short, "to": sel, "reason": "command.select"},
+                                conn_id=conn_id,
+                            )
+                        except Exception:
+                            pass
                         _save_last_project(user, current_project)
                         if suppress_switch_greeting:
                             await websocket.send(f"Project: {current_project}")
+                            try:
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.suppressed",
+                                    current_project,
+                                    detail={"reason": "startup_suppress", "history_state": _history_state_for_project(current_project_full)},
+                                    conn_id=conn_id,
+                                )
+                            except Exception:
+                                pass
                         else:
                             await websocket.send(_project_switch_message(current_project))
                             # Emit a human contextual greeting immediately on switch (no user input required).
@@ -13389,10 +13865,36 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                     project_short=current_project,
                                     reason="switch_project",
                                 )
-                                if gmsg:
+                                history_state = _history_state_for_project(current_project_full)
+                                should_emit, sup_reason = _greeting_should_emit(
+                                    conn=conn_id,
+                                    project_full=current_project_full,
+                                    history_state=history_state,
+                                    reason="switch_project",
+                                    is_expert_switch=False,
+                                )
+                                if not should_emit:
+                                    _TRACE.span(
+                                        trace_id,
+                                        "greeting.suppressed",
+                                        current_project,
+                                        detail={"reason": sup_reason or "dedupe", "history_state": history_state},
+                                        conn_id=conn_id,
+                                    )
+                                elif gmsg:
                                     await websocket.send(gmsg)
-                            except Exception:
-                                pass
+                                    _TRACE.span(
+                                        trace_id,
+                                        "greeting.emit",
+                                        current_project,
+                                        detail={"reason": "switch_project", "history_state": history_state},
+                                        conn_id=conn_id,
+                                    )
+                            except Exception as e:
+                                try:
+                                    _TRACE.span(trace_id, "exception", current_project, detail={"where": "command.select.greeting", "err": type(e).__name__}, conn_id=conn_id)
+                                except Exception:
+                                    pass
                         # Continuity: emit Resume only when the project has meaningful prior content.
                         try:
                             m0 = load_manifest(current_project_full) or {}
@@ -13414,6 +13916,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 # New / switch project (explicit only)
                     if cmd_lower.startswith(("new project:", "start project:", "new project ", "start project ")):
                         old_full = current_project_full
+                        old_short = current_project
                     # Accept both:
                     # - "new project: Alpha"
                     # - "new project Alpha"
@@ -13425,10 +13928,30 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         arg = parts[2].strip() if len(parts) >= 3 else ""
                     name = path_engine.safe_project_name(arg, default_project_name=DEFAULT_PROJECT_NAME)
 
+                    try:
+                        _TRACE.span(
+                            trace_id,
+                            "project.switch.start",
+                            name,
+                            detail={"from": old_short, "to": name, "reason": "command.new"},
+                            conn_id=conn_id,
+                        )
+                    except Exception:
+                        pass
                     current_project = name
                     current_project_full = _full(current_project)
                     ensure_project_scaffold(current_project_full)
                     _ws_move_client(old_full, current_project_full, websocket)
+                    try:
+                        _TRACE.span(
+                            trace_id,
+                            "project.switch.end",
+                            current_project,
+                            detail={"from": old_short, "to": name, "reason": "command.new"},
+                            conn_id=conn_id,
+                        )
+                    except Exception:
+                        pass
                     _save_last_project(user, current_project)
                     await websocket.send(_project_switch_message(current_project, prefix="Started new project:"))
                     # If this is a brand-new empty project, send a human first-line immediately.
@@ -13440,10 +13963,36 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             project_short=current_project,
                             reason="new_project",
                         )
-                        if gmsg:
+                        history_state = _history_state_for_project(current_project_full)
+                        should_emit, sup_reason = _greeting_should_emit(
+                            conn=conn_id,
+                            project_full=current_project_full,
+                            history_state=history_state,
+                            reason="new_project",
+                            is_expert_switch=False,
+                        )
+                        if not should_emit:
+                            _TRACE.span(
+                                trace_id,
+                                "greeting.suppressed",
+                                current_project,
+                                detail={"reason": sup_reason or "dedupe", "history_state": history_state},
+                                conn_id=conn_id,
+                            )
+                        elif gmsg:
                             await websocket.send(gmsg)
-                    except Exception:
-                        pass                    
+                            _TRACE.span(
+                                trace_id,
+                                "greeting.emit",
+                                current_project,
+                                detail={"reason": "new_project", "history_state": history_state},
+                                conn_id=conn_id,
+                            )
+                    except Exception as e:
+                        try:
+                            _TRACE.span(trace_id, "exception", current_project, detail={"where": "command.new_project.greeting", "err": type(e).__name__}, conn_id=conn_id)
+                        except Exception:
+                            pass                    
                     try:
                         m0 = load_manifest(current_project_full) or {}
                         has_goal0 = bool((m0.get("goal") or "").strip())
@@ -13494,6 +14043,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
                 if cmd_lower.startswith(("switch project:", "use project:", "switch project ", "use project ")):
                     old_full = current_project_full
+                    old_short = current_project
                     # Accept both:
                     # - "switch project: alpha"
                     # - "switch project alpha"
@@ -13513,11 +14063,41 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     current_project = name
                     current_project_full = _full(current_project)
                     ensure_project_scaffold(current_project_full)
+                    try:
+                        _TRACE.span(
+                            trace_id,
+                            "project.switch.start",
+                            current_project,
+                            detail={"from": old_short, "to": current_project, "reason": "command.switch"},
+                            conn_id=conn_id,
+                        )
+                    except Exception:
+                        pass
                     _ws_move_client(old_full, current_project_full, websocket)
+                    try:
+                        _TRACE.span(
+                            trace_id,
+                            "project.switch.end",
+                            current_project,
+                            detail={"from": old_short, "to": current_project, "reason": "command.switch"},
+                            conn_id=conn_id,
+                        )
+                    except Exception:
+                        pass
                     _save_last_project(user, current_project)
 
                     if suppress_switch_greeting:
                         await websocket.send(f"Project: {current_project}")
+                        try:
+                            _TRACE.span(
+                                trace_id,
+                                "greeting.suppressed",
+                                current_project,
+                                detail={"reason": "startup_suppress", "history_state": _history_state_for_project(current_project_full)},
+                                conn_id=conn_id,
+                            )
+                        except Exception:
+                            pass
                     else:
                         await websocket.send(_project_switch_message(current_project))
 
@@ -13529,10 +14109,36 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 project_short=current_project,
                                 reason="switch_project",
                             )
-                            if gmsg:
+                            history_state = _history_state_for_project(current_project_full)
+                            should_emit, sup_reason = _greeting_should_emit(
+                                conn=conn_id,
+                                project_full=current_project_full,
+                                history_state=history_state,
+                                reason="switch_project",
+                                is_expert_switch=False,
+                            )
+                            if not should_emit:
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.suppressed",
+                                    current_project,
+                                    detail={"reason": sup_reason or "dedupe", "history_state": history_state},
+                                    conn_id=conn_id,
+                                )
+                            elif gmsg:
                                 await websocket.send(gmsg)
-                        except Exception:
-                            pass
+                                _TRACE.span(
+                                    trace_id,
+                                    "greeting.emit",
+                                    current_project,
+                                    detail={"reason": "switch_project", "history_state": history_state},
+                                    conn_id=conn_id,
+                                )
+                        except Exception as e:
+                            try:
+                                _TRACE.span(trace_id, "exception", current_project, detail={"where": "command.switch.greeting", "err": type(e).__name__}, conn_id=conn_id)
+                            except Exception:
+                                pass
 
                     # If the target project is empty, send a human first-line immediately.
                     try:
@@ -15098,6 +15704,16 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     _user_text_for_search = str(resolved_frame.get("user_text_for_search") or clean_user_msg or "").strip()
                 except Exception:
                     _user_text_for_search = (clean_user_msg or "").strip()
+                try:
+                    _TRACE.span(
+                        trace_id,
+                        "tool.route",
+                        current_project,
+                        detail={"tool": "none", "reason": "explicit_nosearch"},
+                        conn_id=conn_id,
+                    )
+                except Exception:
+                    pass
 
             elif lower.startswith("[search]"):
                 do_search = True
@@ -15119,6 +15735,16 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 qtext = _pick_search_query(_user_text_for_search)
                 search_results = brave_search(qtext, count=(12 if deep_search else 7))
                 search_results = _mark_search_evidence_insufficient(search_results, qtext)
+                try:
+                    _TRACE.span(
+                        trace_id,
+                        "tool.route",
+                        current_project,
+                        detail={"tool": "web", "reason": "explicit_search_tag"},
+                        conn_id=conn_id,
+                    )
+                except Exception:
+                    pass
 
 
             else:
@@ -15186,6 +15812,16 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
                 if picture_request:
                     do_search = True
+                    try:
+                        _TRACE.span(
+                            trace_id,
+                            "tool.route",
+                            current_project,
+                            detail={"tool": "image_search", "reason": "picture_request"},
+                            conn_id=conn_id,
+                        )
+                    except Exception:
+                        pass
 
                     # Determine what to search for:
                     # - Prefer "X" from "picture of X"
@@ -15210,6 +15846,16 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     if not q_img:
                         # No robot talk: ask one human clarifier, then stop this turn.
                         await websocket.send("Sure — a picture of what?")
+                        try:
+                            _TRACE.span(
+                                trace_id,
+                                "tool.route",
+                                current_project,
+                                detail={"tool": "image_search", "reason": "missing_query"},
+                                conn_id=conn_id,
+                            )
+                        except Exception:
+                            pass
                         continue
 
                     # Run bounded image search (max 3) and send directly.
@@ -15302,6 +15948,16 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     if "NO_RESULTS" in (img_block or "") or "Search error" in (img_block or ""):
                         # Fall back to normal web search if images fail (still bounded).
                         qtext_used_for_search = (q_img or "").strip()
+                        try:
+                            _TRACE.span(
+                                trace_id,
+                                "tool.route",
+                                current_project,
+                                detail={"tool": "web", "reason": "image_fallback"},
+                                conn_id=conn_id,
+                            )
+                        except Exception:
+                            pass
                         search_results = brave_search(q_img, count=7)
                         search_results = _mark_search_evidence_insufficient(search_results, q_img)
 
@@ -15550,6 +16206,28 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 _audit_ctx_set("search.reason", f"not_lookup(intent={intent_norm_for_search})")
                             else:
                                 _audit_ctx_set("search.reason", "intent_unknown_or_blocked")
+                    except Exception:
+                        pass
+                    try:
+                        route_tool = "web" if bool(allow_web_search) and (not personal_memory_claim) else "none"
+                        if bool(allow_web_search) and (not personal_memory_claim):
+                            if health_force_search and (search_route_mode != "nosearch"):
+                                route_reason = "health_hat_live_evidence"
+                            elif bool(needs_world or verify_first):
+                                route_reason = "needs_world_evidence_override"
+                            elif intent_norm_for_search == "lookup":
+                                route_reason = "intent_lookup"
+                            else:
+                                route_reason = "heuristic_auto_web_search"
+                        else:
+                            route_reason = "blocked_or_not_needed"
+                        _TRACE.span(
+                            trace_id,
+                            "tool.route",
+                            current_project,
+                            detail={"tool": route_tool, "reason": route_reason},
+                            conn_id=conn_id,
+                        )
                     except Exception:
                         pass
                     # Single authoritative auto-search heuristic (no phrase lists).
