@@ -1316,7 +1316,7 @@ def update_couples_shared_memory_from_message(project_name: str, user: str, user
     Couples-only: capture proposed agreements and mark corroborated when both partners mention them.
     """
     try:
-        pname = safe_project_name(project_name)
+        pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
         user_seg = pname.split("/", 1)[0].strip().lower()
         if not user_seg.startswith("couple_"):
             return
@@ -1387,7 +1387,7 @@ def update_couples_shared_memory_from_assistant(project_name: str, assistant_msg
     Couples-only: capture therapist-suggested rules (proposed_by_quinn).
     """
     try:
-        pname = safe_project_name(project_name)
+        pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
         user_seg = pname.split("/", 1)[0].strip().lower()
         if not user_seg.startswith("couple_"):
             return
@@ -3635,7 +3635,7 @@ def mark_project_deleted(project_name: str) -> None:
     Mark a project as deleted for a short TTL window.
     This prevents ensure_project()/ensure_project_scaffold() from recreating it immediately.
     """
-    name = safe_project_name(project_name)
+    name = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
     _DELETED_PROJECTS[name] = time.time() + float(_DELETED_PROJECT_TTL_S)
 
 
@@ -3644,7 +3644,7 @@ def is_project_deleted(project_name: str) -> bool:
     True only during the TTL window after deletion.
     After TTL, the tombstone expires automatically so the user can recreate the project name.
     """
-    name = safe_project_name(project_name)
+    name = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
     exp = _DELETED_PROJECTS.get(name)
     if not exp:
         return False
@@ -3741,23 +3741,6 @@ def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def safe_project_name(name: str) -> str:
-    """
-    Normalize a project name while preserving folder nesting like "User/Project".
-    Each path segment is sanitized independently.
-    """
-    raw = (name or "").strip().replace("\\", "/")
-    parts = [p for p in raw.split("/") if p.strip()]
-    if not parts:
-        return DEFAULT_PROJECT_NAME
-
-    cleaned_parts: List[str] = []
-    for part in parts:
-        cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", part.strip())
-        cleaned_parts.append(cleaned or DEFAULT_PROJECT_NAME)
-
-    return "/".join(cleaned_parts)
-
 # -----------------------------------------------------------------------------
 # Couples links (system-private; not inside any user's project tree)
 # -----------------------------------------------------------------------------
@@ -3819,7 +3802,7 @@ def get_couple(couple_id: str) -> Optional[Dict[str, Any]]:
 
 def project_dir(project_name: str) -> Path:
     pr, pd = _require_configured()
-    return pd / safe_project_name(project_name)
+    return pd / path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
 
 
 def project_manifest_path(project_name: str) -> Path:
@@ -3828,7 +3811,10 @@ def project_manifest_path(project_name: str) -> Path:
 
 def ensure_project(project_name: str) -> Path:
     if is_project_deleted(project_name):
-        raise RuntimeError(f"Project '{safe_project_name(project_name)}' was just deleted; refusing to auto-recreate.")
+        raise RuntimeError(
+            f"Project '{path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)}' "
+            "was just deleted; refusing to auto-recreate."
+        )
     pr, pd = _require_configured()
     pdir = project_dir(project_name)
     (pdir / RAW_DIR_NAME).mkdir(parents=True, exist_ok=True)
@@ -3837,7 +3823,7 @@ def ensure_project(project_name: str) -> Path:
     if not project_manifest_path(project_name).exists():
         manifest = {
             "version": MANIFEST_VERSION,
-            "project_name": safe_project_name(project_name),
+            "project_name": path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME),
             "display_name": "",
             "created_at": time.time(),
             "updated_at": time.time(),
@@ -3875,7 +3861,7 @@ def load_manifest(project_name: str) -> Dict[str, Any]:
 
     # minimal repair
     m.setdefault("version", MANIFEST_VERSION)
-    m.setdefault("project_name", safe_project_name(project_name))
+    m.setdefault("project_name", path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME))
     m.setdefault("display_name", "")
     m.setdefault("created_at", time.time())
     m.setdefault("updated_at", time.time())
@@ -4287,7 +4273,7 @@ def append_fact_raw_candidate(
     # ---------------------------------------------------------------------
     try:
         # Determine user segment from "user/project" naming.
-        pname = safe_project_name(project_name)
+        pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
         user_seg0 = pname.split("/", 1)[0].strip()
 
         if user_seg0:
@@ -6267,7 +6253,7 @@ def render_pending_bringups_for_session(project_name: str, *, session_start: boo
         return ""
 
     # Determine current user segment from "user/project"
-    pname = safe_project_name(project_name)
+    pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
     user_seg = pname.split("/", 1)[0].strip()
     proj_seg = pname.split("/", 1)[1].strip() if "/" in pname else DEFAULT_PROJECT_NAME
     if not user_seg.lower().startswith("couple_"):
@@ -6300,8 +6286,8 @@ def render_pending_bringups_for_session(project_name: str, *, session_start: boo
 
     # Option A rule: scan bringups inside the CURRENT project segment (e.g., therapy_test)
     # for both partners, not link-record defaults.
-    proj_a = safe_project_name(f"{ua}/{proj_seg or DEFAULT_PROJECT_NAME}")
-    proj_b = safe_project_name(f"{ub}/{proj_seg or DEFAULT_PROJECT_NAME}")
+    proj_a = path_engine.safe_project_name(f"{ua}/{proj_seg or DEFAULT_PROJECT_NAME}", default_project_name=DEFAULT_PROJECT_NAME)
+    proj_b = path_engine.safe_project_name(f"{ub}/{proj_seg or DEFAULT_PROJECT_NAME}", default_project_name=DEFAULT_PROJECT_NAME)
 
     # Bringups may be stored in either partner's project; scan both.
     items = []
@@ -7262,7 +7248,7 @@ def build_canonical_snippets(
     partner_project_full = ""
     try:
         no_extra = "__NO_COUPLES_EXTRA__" in (user_text or "")
-        pname = safe_project_name(project_name)
+        pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
         user_seg = pname.split("/", 1)[0].strip()
         proj_seg = pname.split("/", 1)[1].strip() if "/" in pname else DEFAULT_PROJECT_NAME
 
@@ -7296,7 +7282,9 @@ def build_canonical_snippets(
                     partner_user = ua
 
                 partner_proj = proj_seg or DEFAULT_PROJECT_NAME
-                partner_project_full = safe_project_name(f"{partner_user}/{partner_proj}")
+                partner_project_full = path_engine.safe_project_name(
+                    f"{partner_user}/{partner_proj}", default_project_name=DEFAULT_PROJECT_NAME
+                )
     except Exception:
         partner_user = ""
         partner_project_full = ""
@@ -7567,7 +7555,7 @@ def build_canonical_snippets(
 
     # Couples Shared Memory (agreements, corroborated vs proposed)
     try:
-        pname2 = safe_project_name(project_name)
+        pname2 = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
         user_seg2 = pname2.split("/", 1)[0].strip().lower()
         if user_seg2.startswith("couple_"):
             mem = load_couples_shared_memory(project_name)
@@ -11388,7 +11376,7 @@ def build_extraction_ledger_and_write(
     ledger_obj: Dict[str, Any] = {
         "version": 1,
         "generated_at": extracted_at,
-        "project": safe_project_name(project_name),
+        "project": path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME),
         "item_count": len(all_items),
         "items": all_items,
     }
@@ -11487,7 +11475,10 @@ WORKING_DOC_SPECS: List[Tuple[str, str, str, str]] = [
 
 def ensure_project_scaffold(project_name: str) -> None:
     if is_project_deleted(project_name):
-        raise RuntimeError(f"Project '{safe_project_name(project_name)}' was just deleted; refusing to auto-recreate scaffold.")
+        raise RuntimeError(
+            f"Project '{path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)}' "
+            "was just deleted; refusing to auto-recreate scaffold."
+        )
     ensure_project(project_name)
     m = load_manifest(project_name)
     goal = (m.get("goal") or "").strip()
@@ -11716,7 +11707,7 @@ def list_project_files(project_name: str) -> Dict[str, Any]:
     pr, pd = _require_configured()
     m = load_manifest(project_name)
 
-    project_full = safe_project_name(project_name)
+    project_full = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
     expected_prefix = f"projects/{project_full}/"
 
     def _norm(p: Any) -> str:

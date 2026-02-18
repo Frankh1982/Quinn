@@ -1448,9 +1448,6 @@ def _maybe_start_profile_gap_questions(user: str) -> Tuple[bool, str]:
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-def safe_project_name(name: str) -> str:
-    return path_engine.safe_project_name(name, default_project_name=DEFAULT_PROJECT_NAME)
-
 def safe_user_name(user: str) -> str:
     """
     Sanitize the user segment for on-disk paths.
@@ -9623,7 +9620,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             if p.exists():
                 obj = json.loads(p.read_text(encoding="utf-8") or "{}")
                 val = str(obj.get("project") or "").strip()
-                return safe_project_name(val) if val else ""
+                return path_engine.safe_project_name(val, default_project_name=DEFAULT_PROJECT_NAME) if val else ""
         except Exception:
             pass
         return ""
@@ -9631,7 +9628,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
     def _save_last_project(u: str, proj_short: str) -> None:
         try:
             p = _user_last_project_path(u)
-            obj = {"project": safe_project_name(proj_short), "updated_at": now_iso()}
+            obj = {"project": path_engine.safe_project_name(proj_short, default_project_name=DEFAULT_PROJECT_NAME), "updated_at": now_iso()}
             project_store.atomic_write_text(p, json.dumps(obj, indent=2, sort_keys=True))
         except Exception:
             pass
@@ -9650,7 +9647,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         if lp:
             current_project = lp
 
-    current_project_full = safe_project_name(f"{user}/{current_project}")
+    current_project_full = path_engine.safe_project_name(f"{user}/{current_project}", default_project_name=DEFAULT_PROJECT_NAME)
     ensure_project_scaffold(current_project_full)
 
     # Deterministic couples bootstrap (no model call, no user setup)
@@ -9726,7 +9723,10 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
     _ws_add_client(current_project_full, websocket)
 
     def _full(short_name: str) -> str:
-        return safe_project_name(f"{user}/{safe_project_name(short_name)}")
+        return path_engine.safe_project_name(
+            f"{user}/{path_engine.safe_project_name(short_name, default_project_name=DEFAULT_PROJECT_NAME)}",
+            default_project_name=DEFAULT_PROJECT_NAME,
+        )
 
     def _get_project_goal(full_name: str) -> str:
         try:
@@ -12235,7 +12235,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 if ftype == "thread.get":
                     try:
                         proj_req = str(frame_obj.get("project") or "").strip()
-                        proj_short = safe_project_name(proj_req) if proj_req else current_project
+                        proj_short = path_engine.safe_project_name(proj_req, default_project_name=DEFAULT_PROJECT_NAME) if proj_req else current_project
                         proj_full = _full(proj_short)
 
                         # Make thread.get authoritative for current project (align server state)
@@ -12298,7 +12298,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             if ex_id:
                                 try:
                                     project_store.write_project_state_fields(
-                                        _full(safe_project_name(proj)),
+                                        _full(path_engine.safe_project_name(proj, default_project_name=DEFAULT_PROJECT_NAME)),
                                         {
                                             "last_active_expert": ex_id,
                                             "last_active_expert_at": now_iso(),
@@ -12307,7 +12307,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 except Exception:
                                     pass
 
-                        proj_short = safe_project_name(proj)
+                        proj_short = path_engine.safe_project_name(proj, default_project_name=DEFAULT_PROJECT_NAME)
                         proj_full = _full(proj_short)
                         ensure_project_scaffold(proj_full)
 
@@ -12342,7 +12342,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 if ftype == "upload.synthesize":
                     try:
                         proj = str(frame_obj.get("project") or "").strip() or current_project
-                        proj_short = safe_project_name(proj)
+                        proj_short = path_engine.safe_project_name(proj, default_project_name=DEFAULT_PROJECT_NAME)
                         proj_full = _full(proj_short)
                         ensure_project_scaffold(proj_full)
 
@@ -12486,7 +12486,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         if proj:
                             old_short = current_project
                             old_full = current_project_full
-                            current_project = safe_project_name(proj)
+                            current_project = path_engine.safe_project_name(proj, default_project_name=DEFAULT_PROJECT_NAME)
                             current_project_full = _full(current_project)
                             _save_last_project(user, current_project)
 
@@ -13425,7 +13425,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     else:
                         parts = cmd_text.split(None, 2)  # ["new","project","Alpha..."]
                         arg = parts[2].strip() if len(parts) >= 3 else ""
-                    name = safe_project_name(arg)
+                    name = path_engine.safe_project_name(arg, default_project_name=DEFAULT_PROJECT_NAME)
 
                     current_project = name
                     current_project_full = _full(current_project)
@@ -13505,7 +13505,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     else:
                         parts = cmd_text.split(None, 2)  # ["switch","project","alpha..."]
                         arg = parts[2].strip() if len(parts) >= 3 else ""
-                    name = safe_project_name(arg)
+                    name = path_engine.safe_project_name(arg, default_project_name=DEFAULT_PROJECT_NAME)
 
                     if name == current_project:
                         # No-op: avoid redundant switch churn or greeting spam.
