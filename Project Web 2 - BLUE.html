@@ -81,31 +81,6 @@
       --danger: #ef4444;
     }
 
-    #debugPanel {
-      position: fixed;
-      right: 14px;
-      bottom: 14px;
-      width: 320px;
-      max-width: calc(100vw - 28px);
-      background: var(--bg-elevated);
-      color: var(--text-main);
-      border: 1px solid var(--border-subtle);
-      border-radius: 12px;
-      padding: 10px 12px;
-      font-size: 12px;
-      z-index: 300;
-      display: none;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-    }
-    #debugPanel.visible { display: block; }
-    #debugPanel .row { display: flex; justify-content: space-between; gap: 8px; }
-    #debugPanel .muted { color: var(--text-subtle); }
-    #debugPanel pre {
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin: 6px 0 0 0;
-    }
-
     * {
       box-sizing: border-box;
     }
@@ -135,8 +110,8 @@
     }
 
     #left {
-      flex: 1;
-      border-right: none;
+      flex: 2;
+      border-right: 1px solid var(--border-subtle);
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -144,7 +119,12 @@
     }
 
     #right {
-      display: none;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow: hidden;
+      min-width: 0;
     }
 
     @media (max-width: 800px) {
@@ -173,46 +153,6 @@
       gap: 8px;
       flex-wrap: nowrap;
       position: relative; /* allow true center control */
-    }
-
-    /* Batch progress bar (top bar) */
-    #batchProgressTrack {
-      position: fixed;
-      left: 12px;
-      right: 12px;
-      top: 8px;
-      height: 3px;
-      border-radius: 999px;
-      overflow: hidden;
-      background: transparent;
-      pointer-events: none;
-      display: none;
-      z-index: 4000;
-    }
-    #batchProgressBar {
-      height: 100%;
-      width: 0%;
-      background: var(--accent);
-      transition: width 320ms ease;
-      filter: drop-shadow(0 0 6px var(--accent));
-    }
-    #batchProgressTrack.indeterminate #batchProgressBar {
-      width: 30%;
-      animation: batchSweep 1.2s ease-in-out infinite;
-    }
-    #batchProgressTrack.finalizing #batchProgressBar {
-      width: 100%;
-      animation: batchPulse 1.2s ease-in-out infinite;
-    }
-    @keyframes batchSweep {
-      0% { transform: translateX(-40%); }
-      50% { transform: translateX(120%); }
-      100% { transform: translateX(220%); }
-    }
-    @keyframes batchPulse {
-      0% { opacity: 0.5; }
-      50% { opacity: 1; }
-      100% { opacity: 0.5; }
     }
 
     /* Center control sits in true middle (independent of left/right widths) */
@@ -513,21 +453,6 @@
       overflow: hidden;
       position: relative;
     }
-    #expertNotice {
-      position: sticky;
-      top: 0;
-      z-index: 5;
-      margin: 4px 6px 8px;
-      padding: 8px 10px;
-      background: rgba(16, 24, 40, 0.06);
-      border: 1px solid var(--border-subtle);
-      border-radius: 10px;
-      color: var(--text-main);
-      font-size: 12px;
-      font-weight: 700;
-      display: none;
-    }
-    #expertNotice.visible { display: block; }
 
     #log {
       flex: 1;
@@ -1458,14 +1383,9 @@
           <span id="status">Disconnected</span>
           <button id="themeToggle" type="button">Dark mode: Off</button>
         </div>
-
-        <div id="batchProgressTrack" aria-hidden="true">
-          <div id="batchProgressBar"></div>
-        </div>
       </div>
 
       <div id="logContainer">
-        <div id="expertNotice"></div>
         <div id="log"></div>
         <div id="chatDropOverlay">
           Drop files here to upload into this chat.
@@ -1570,20 +1490,6 @@
     </div>
     <div id="drawerContent" style="margin-top:10px;"></div>
   </div>
-  <div id="debugPanel">
-    <div class="row" style="align-items:center;">
-      <strong>Debug</strong>
-      <div style="display:flex; gap:6px; align-items:center;">
-        <span class="muted">Ctrl+Shift+D / Ctrl+Shift+T</span>
-        <button id="debugTraceDumpBtn" class="small" type="button">Dump server trace</button>
-        <button id="debugHideBtn" class="small" type="button">Hide</button>
-      </div>
-    </div>
-    <div id="debugUsageSummary" style="margin-top:6px;"></div>
-    <pre id="debugUsageDetails" class="muted"></pre>
-    <div id="debugTraceSummary" style="margin-top:8px;"></div>
-    <pre id="debugTraceDetails" class="muted"></pre>
-  </div>
   <div id="projectMenuBackdrop"></div>
   <script>
 // HTTP API should go to the same origin+port that served this page.
@@ -1616,8 +1522,8 @@ async function ensureEndpoints() {
     /^\d{1,3}(\.\d{1,3}){3}$/.test(httpHost);
 
   // WS host preference:
-  // ? Local: direct host:ws_port
-  // ? Public: prefer ws.<host> first (your proxy terminates WS there),
+  // - Local: direct host:ws_port
+  // - Public: prefer ws.<host> first (your proxy terminates WS there),
   //           then fall back to SAME host.
   const wsHostPrimary = isLocal ? httpHost : ("ws." + httpHost);
   const wsHostAlt = httpHost;
@@ -1634,8 +1540,8 @@ async function ensureEndpoints() {
   } catch (_) {}
 
   // Port rules:
-  // ? Localhost/dev: use explicit ws_port (e.g., 8765)
-  // ? Public domain: DO NOT append ports; your working "old" UI proved ws.<domain> works on 443.
+  // - Localhost/dev: use explicit ws_port (e.g., 8765)
+  // - Public domain: DO NOT append ports; your working "old" UI proved ws.<domain> works on 443.
   const pagePort = (window.location.port || "").trim();
   const wsPort = (wsPortGuess || "").trim();
 
@@ -1651,13 +1557,13 @@ async function ensureEndpoints() {
   }
 
   // Primary WS target:
-  // ? Public: ws.<host> first (matches your working endpoint on 443)
-  // ? Local: host stays the same anyway
+  // - Public: ws.<host> first (matches your working endpoint on 443)
+  // - Local: host stays the same anyway
   const primary = `${wsProto}://${wsHostPrimary}${portSuffix}`;
 
   // Fallback WS target:
-  // ? Public: SAME host
-  // ? Local: same as primary (harmless)
+  // - Public: SAME host
+  // - Local: same as primary (harmless)
   const fallback = `${wsProto}://${wsHostAlt}${portSuffix}`;
 
   WS_URL = primary;
@@ -1725,11 +1631,8 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         // BUT: during long-running server work (deliverables), the WS can be quiet.
         // If the UI is actively showing "thinking…", do NOT self-close.
         if (now - wsLastPongAt > WS_DEAD_MS) {
-          const uiBusy =
-            (typeof thinkingActive !== "undefined" && thinkingActive) ||
-            (window.BatchProgress && typeof window.BatchProgress.isActive === "function" && window.BatchProgress.isActive());
-          if (uiBusy) {
-            console.warn("[WS] heartbeat timeout, but UI is in thinking state - not closing socket");
+          if (typeof thinkingBubble !== "undefined" && thinkingBubble) {
+            console.warn("[WS] heartbeat timeout, but UI is in thinking state — not closing socket");
             wsLastPongAt = now;
             return;
           }
@@ -1741,9 +1644,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
 
         try {
           // Preferred heartbeat frame (v1). Server replies with {v:1,type:"ws.pong"}.
-        const frame = { v: 1, type: "ws.ping" };
-        attachTrace(frame, "send");
-        ws.send(JSON.stringify(frame));
+          ws.send(JSON.stringify({ v: 1, type: "ws.ping" }));
         } catch (e) {
           console.warn("[WS] ping send failed", e);
         }
@@ -1903,7 +1804,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     function looksLikeBootstrapPulse(msg) {
       const s = String(msg || "");
       // Deterministic markers emitted by build_truth_bound_pulse() for new projects
-      if (s.includes("Project is being initialized - goal not yet confirmed.")) return true;
+      if (s.includes("Project is being initialized — goal not yet confirmed.")) return true;
       if (s.includes("Goal: (not set yet)")) return true;
       if (s.startsWith("Project Pulse (truth-bound)")) return true;
       return false;
@@ -1912,7 +1813,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     function isBootstrapResumeBlob(msg) {
       const s = String(msg || "");
       // Deterministic: new project pulse always contains this banner from build_truth_bound_pulse().
-      if (s.includes("Project is being initialized - goal not yet confirmed.")) return true;
+      if (s.includes("Project is being initialized — goal not yet confirmed.")) return true;
 
       // Extra belt-and-suspenders: catch goal-not-set phrases
       if (s.includes("Goal: (not set yet)")) return true;
@@ -2001,16 +1902,14 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       // IMPORTANT: ws_commands requires explicit invocation ("!" or "/cmd"), otherwise it will fall through as normal chat.
       // Use canonical WS frame. Do NOT use send() here (we don't want a user bubble).
       try {
-        const frame = {
+        ws.send(JSON.stringify({
           v: 1,
           type: "chat.send",
           text: "!last answer",
           project: (currentProjectName || p || "default"),
           active_expert: (activeExpert || "default"),
           intent: {}
-        };
-        attachTrace(frame, "send");
-        ws.send(JSON.stringify(frame));
+        }));
       } catch (_) {}
     }
     // --- Startup ownership (restore owns startup) ---
@@ -2047,9 +1946,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       __threadGetInFlight[p] = true;
 
       try {
-        const frame = { v: 1, type: "thread.get", project: p, reason: String(reason || "") };
-        attachTrace(frame, "send");
-        ws.send(JSON.stringify(frame));
+        ws.send(JSON.stringify({ v: 1, type: "thread.get", project: p, reason: String(reason || "") }));
       } catch (_) {
         __threadGetInFlight[p] = false;
       }
@@ -2070,7 +1967,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         s.startsWith("Project:") &&
         s.includes("Documents:") &&
         (s.includes("Cheat sheets / artifacts:") || s.includes("Artifacts:")) &&
-        s.includes("/file-path=")
+        s.includes("/file?path=")
       );
     }
 
@@ -2085,7 +1982,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         // Example: "- assistant_output_20251227_232527_v1.md [type=assistant_output, v1]"
         if (ln.startsWith("- ") && ln.includes("[type=assistant_output")) {
           const next = (lines[i + 1] || "").trim();
-          const mHref = next.match(/\/file\-path=\S+/);
+          const mHref = next.match(/\/file\?path=\S+/);
           if (!mHref) continue;
 
           const href = mHref[0];
@@ -2157,19 +2054,19 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     function parseProjectNameFromMsg(msg) {
       const s = String(msg || "");
       // common server formats already handled elsewhere
-      const m1 = s.match(/(-:^|\n)\s*Project:\s*([^\n\r]+)/i);
+      const m1 = s.match(/(?:^|\n)\s*Project:\s*([^\n\r]+)/i);
       if (m1 && m1[1]) return m1[1].trim();
 
-      const m2 = s.match(/(-:^|\n)\s*Current project:\s*([^\n\r]+)/i);
+      const m2 = s.match(/(?:^|\n)\s*Current project:\s*([^\n\r]+)/i);
       if (m2 && m2[1]) return m2[1].trim();
 
-      const m3 = s.match(/(-:^|\n)\s*Current project for this connection:\s*([^\n\r]+)/i);
+      const m3 = s.match(/(?:^|\n)\s*Current project for this connection:\s*([^\n\r]+)/i);
       if (m3 && m3[1]) return m3[1].trim();
 
-      const m4 = s.match(/(-:^|\n)\s*Switched current project for this connection to:\s*([^\n\r]+)/i);
+      const m4 = s.match(/(?:^|\n)\s*Switched current project for this connection to:\s*([^\n\r]+)/i);
       if (m4 && m4[1]) return m4[1].trim();
 
-      const m5 = s.match(/(-:^|\n)\s*Started new project:\s*([^\n\r]+)/i);
+      const m5 = s.match(/(?:^|\n)\s*Started new project:\s*([^\n\r]+)/i);
       if (m5 && m5[1]) return m5[1].trim();
 
       return "";
@@ -2210,7 +2107,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
        const awayMs = lastHiddenAt ? (now - lastHiddenAt) : 0;
        lastCameBackAt = now;
 
-       // DO NOT clear lastHiddenAt immediately - ws.onclose may fire after we return.
+       // DO NOT clear lastHiddenAt immediately — ws.onclose may fire after we return.
        // Clear it after the resume grace window so auth-ish WS closes are treated as background churn.
        setTimeout(() => { lastHiddenAt = 0; }, RESUME_GRACE_MS + 250);
 
@@ -2223,7 +2120,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
        // If away long enough, force re-login.
        if (awayMs >= INACTIVITY_LOGIN_MS) {
          clearTransientAuth();
-         showLogin("Session expired - please log in again.");
+         showLogin("Session expired — please log in again.");
          return;
        }
 
@@ -2347,201 +2244,9 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     const chatDropOverlay = document.getElementById("chatDropOverlay");
     const projectNamePill = document.getElementById("projectNamePill");
     const logContainer = document.getElementById("logContainer");
-    const expertNotice = document.getElementById("expertNotice");
-    const debugPanel = document.getElementById("debugPanel");
-    const debugUsageSummary = document.getElementById("debugUsageSummary");
-    const debugUsageDetails = document.getElementById("debugUsageDetails");
-    const debugTraceSummary = document.getElementById("debugTraceSummary");
-    const debugTraceDetails = document.getElementById("debugTraceDetails");
-    const debugTraceDumpBtn = document.getElementById("debugTraceDumpBtn");
-    const debugHideBtn = document.getElementById("debugHideBtn");
         // Copy-chat button removed (we use per-message ⧉ icon now).
     // Keep a safe null reference so legacy code below doesn't crash.
     const copyChatBtn = null;
-
-    // --- Debug panel (hidden) ---
-    let debugVisible = false;
-    let traceVisible = false;
-    let lastUsageFrame = null;
-    let lastTraceId = "";
-    const traceEvents = [];
-    const TRACE_EVENT_LIMIT = 20;
-    let serverTraceDump = [];
-    const EXPERT_NOTICE_MS = 2500;
-    let expertNoticeTimer = null;
-
-    function newTraceId() {
-      const rand = Math.floor(Math.random() * 0xffffffff).toString(16).slice(0, 8);
-      return `ui_${Date.now()}_${rand}`;
-    }
-
-    function attachTrace(frame, dir, overrideType, updateLast) {
-      if (!frame || typeof frame !== "object") return "";
-      const tid = String(frame.trace_id || "").trim() || newTraceId();
-      frame.trace_id = tid;
-      const typ = String(overrideType || frame.type || "").trim();
-      const ts = new Date().toISOString();
-      if (updateLast) lastTraceId = tid;
-      recordTraceEvent({ dir: dir || "", type: typ, trace_id: tid, ts });
-      try { console.log("[TRACE]", dir || "", typ, tid); } catch (_) {}
-      return tid;
-    }
-
-    function recordTraceEvent(evt) {
-      if (!evt || typeof evt !== "object") return;
-      traceEvents.push(evt);
-      while (traceEvents.length > TRACE_EVENT_LIMIT) traceEvents.shift();
-      if (traceVisible) renderTraceDebug();
-    }
-
-    function clearExpertNotice() {
-      try {
-        if (!expertNotice) return;
-        expertNotice.textContent = "";
-        expertNotice.classList.remove("visible");
-      } catch (_) {}
-      try {
-        if (expertNoticeTimer) clearTimeout(expertNoticeTimer);
-      } catch (_) {}
-      expertNoticeTimer = null;
-    }
-
-    function showExpertNotice(msg) {
-      try {
-        if (!expertNotice) return;
-        expertNotice.textContent = String(msg || "").trim();
-        if (!expertNotice.textContent) return;
-        expertNotice.classList.add("visible");
-      } catch (_) {}
-      try {
-        if (expertNoticeTimer) clearTimeout(expertNoticeTimer);
-      } catch (_) {}
-      expertNoticeTimer = setTimeout(() => {
-        clearExpertNotice();
-      }, EXPERT_NOTICE_MS);
-    }
-
-    function formatUsageLine(label, obj) {
-      if (!obj) return `${label}: (none)`;
-      const calls = Number(obj.calls || 0);
-      const pt = Number(obj.prompt_tokens || 0);
-      const ct = Number(obj.completion_tokens || 0);
-      const tt = Number(obj.total_tokens || 0);
-      return `${label}: calls ${calls} | in ${pt} | out ${ct} | total ${tt}`;
-    }
-
-    function renderUsageDebug() {
-      if (!debugPanel || !debugUsageSummary || !debugUsageDetails) return;
-      if (!lastUsageFrame) {
-        debugUsageSummary.textContent = "Waiting for usage data...";
-        debugUsageDetails.textContent = "";
-        return;
-      }
-      const u = lastUsageFrame.usage || {};
-      const tot = lastUsageFrame.total || {};
-      const trace = String(lastUsageFrame.trace_id || "").trim();
-      const ts = String(lastUsageFrame.ts || "").trim();
-      const lines = [];
-      lines.push(formatUsageLine("Turn", u));
-      lines.push(formatUsageLine("Session", tot));
-      if (trace) lines.push(`trace_id: ${trace}`);
-      if (ts) lines.push(`ts: ${ts}`);
-      debugUsageSummary.textContent = lines.join("  |  ");
-
-      const byModel = (u.by_model && typeof u.by_model === "object") ? u.by_model : {};
-      const modelLines = [];
-      for (const [k, v] of Object.entries(byModel)) {
-        modelLines.push(formatUsageLine(k, v));
-      }
-      debugUsageDetails.textContent = modelLines.join("\\n");
-    }
-
-    function renderTraceDebug() {
-      if (!debugPanel || !debugTraceSummary || !debugTraceDetails) return;
-      const t = String(lastTraceId || "").trim();
-      const lines = [];
-      lines.push(`trace_id: ${t || "(none)"}`);
-      lines.push(`events: ${traceEvents.length}`);
-      debugTraceSummary.textContent = lines.join("  |  ");
-      const out = [];
-      if (Array.isArray(serverTraceDump) && serverTraceDump.length) {
-        out.push("SERVER TRACE DUMP (most recent first)");
-        const dump = serverTraceDump.slice().reverse();
-        for (const ev of dump) {
-          if (!ev || typeof ev !== "object") continue;
-          const ts = (ev.ts_monotonic == null) ? "" : String(ev.ts_monotonic);
-          const typ = String(ev.event_type || "");
-          const proj = String(ev.project || "");
-          const cnt = (ev.count == null) ? "" : String(ev.count);
-          let det = "";
-          try {
-            det = ev.detail ? JSON.stringify(ev.detail) : "";
-          } catch (_) {
-            det = "";
-          }
-          out.push(`${ts} ${typ} ${proj} ${cnt}${det ? " " + det : ""}`.trim());
-        }
-        out.push("");
-      }
-      out.push("RECENT TRACE (last 20)");
-      for (const ev of traceEvents) {
-        const dir = ev.dir || "";
-        const typ = ev.type || "";
-        const tid = ev.trace_id || "";
-        const ts = ev.ts || "";
-        out.push(`${dir} ${typ} ${tid} ${ts}`.trim());
-      }
-      debugTraceDetails.textContent = out.join("\\n");
-    }
-
-    function _setDebugPanelVisible() {
-      if (!debugPanel) return;
-      debugPanel.classList.toggle("visible", !!(debugVisible || traceVisible));
-    }
-
-    function toggleDebugPanel(force) {
-      if (!debugPanel) return;
-      debugVisible = (typeof force === "boolean") ? force : !debugVisible;
-      _setDebugPanelVisible();
-      if (debugVisible) renderUsageDebug();
-    }
-
-    function toggleTracePanel(force) {
-      if (!debugPanel) return;
-      traceVisible = (typeof force === "boolean") ? force : !traceVisible;
-      _setDebugPanelVisible();
-      if (traceVisible) renderTraceDebug();
-    }
-
-    function requestTraceDump() {
-      try {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        const frame = { v: 1, type: "trace.dump", last: 200 };
-        attachTrace(frame, "send");
-        ws.send(JSON.stringify(frame));
-      } catch (_) {}
-    }
-
-    if (debugHideBtn) debugHideBtn.addEventListener("click", () => {
-      debugVisible = false;
-      traceVisible = false;
-      _setDebugPanelVisible();
-    });
-    if (debugTraceDumpBtn) debugTraceDumpBtn.addEventListener("click", () => requestTraceDump());
-    document.addEventListener("keydown", (ev) => {
-      if (ev.ctrlKey && ev.shiftKey && (ev.key === "D" || ev.key === "d")) {
-        ev.preventDefault();
-        toggleDebugPanel();
-      }
-      if (ev.ctrlKey && ev.shiftKey && (ev.key === "T" || ev.key === "t")) {
-        ev.preventDefault();
-        toggleTracePanel();
-      }
-      if (ev.ctrlKey && ev.shiftKey && (ev.key === "Y" || ev.key === "y")) {
-        ev.preventDefault();
-        requestTraceDump();
-      }
-    });
 
     // --- Mobile drawer (Projects) ---
     const rightPane = document.getElementById("right");
@@ -2590,7 +2295,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     const projectMenu = document.getElementById("projectMenu");
     const projectMenuBackdrop = document.getElementById("projectMenuBackdrop");
     // -------------------------------
-    // Expert (hat) switching - UI ONLY
+    // Expert (hat) switching — UI ONLY
     // -------------------------------
     const EXPERTS = [
       {
@@ -2617,15 +2322,15 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         darkElevated: "#062016"
       },
       {
-        id: "health", label: "Health",
-        accent: "#dc2626",
+        id: "writing", label: "Writing",
+        accent: "#a855f7",
 
         // +1 step contrast: clearer mode shift, still calm
-        lightBg: "#f7e3e3",
-        lightElevated: "#fbeeee",
+        lightBg: "#ede2f7",
+        lightElevated: "#f5edfb",
 
-        darkBg: "#1a0606",
-        darkElevated: "#240a0a"
+        darkBg: "#12061a",
+        darkElevated: "#1c0b28"
       },
       {
         id: "therapist", label: "Therapist",
@@ -2665,7 +2370,6 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     function loadActiveExpert(projectName) {
       try {
         const v = (window.localStorage.getItem(expertStorageKey(projectName)) || "").trim();
-        if (v === "writing") return "health";
         return v || "default";
       } catch (_) {
         return "default";
@@ -2722,8 +2426,8 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       root.style.setProperty("--accent-soft", isDark ? "rgba(22,163,74,0.18)" : "rgba(22,163,74,0.12)");
       if (ex.id === "default") {
         root.style.setProperty("--accent-soft", isDark ? "rgba(96,165,250,0.20)" : "rgba(37,99,235,0.10)");
-      } else if (ex.id === "health") {
-        root.style.setProperty("--accent-soft", isDark ? "rgba(220,38,38,0.18)" : "rgba(220,38,38,0.10)");
+      } else if (ex.id === "writing") {
+        root.style.setProperty("--accent-soft", isDark ? "rgba(168,85,247,0.18)" : "rgba(168,85,247,0.10)");
       } else if (ex.id === "therapist") {
         root.style.setProperty("--accent-soft", isDark ? "rgba(14,165,163,0.20)" : "rgba(14,165,163,0.10)");
       } else if (ex.id === "analysis") {
@@ -2803,17 +2507,25 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
           activeExpert = next;
           saveActiveExpert(activeExpert, projectForExpertStore());
           applyExpertTheme(activeExpert);
-          try {
-            if (window.UploadCenter && typeof window.UploadCenter.refresh === "function") {
-              window.UploadCenter.refresh();
-            }
-          } catch (_) {}
 
           if (expertPill) expertPill.textContent = ex.label + " ▾";
 
           closeExpertMenu();
 
-          showExpertNotice(`Switched to: ${ex.label}`);
+          // Ask the server for a contextual, tone-matched greeting on expert switch.
+          try {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              const p = String(currentProjectName || desiredProjectName || "default").trim() || "default";
+              const reason = `expert_switch:${ex.id}`;
+              const now = Date.now();
+              const k = `${p}|${reason}`;
+              const last = __greetReqLastAt[k] || 0;
+              if ((now - last) >= 4000) {
+                __greetReqLastAt[k] = now;
+                ws.send(JSON.stringify({ v: 1, type: "greeting.request", project: p, reason }));
+              }
+            }
+          } catch (_) {}
           _lastAckedExpert = activeExpert;
         });
 
@@ -2875,7 +2587,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
             return;
           }
 
-          const ok = window.confirm(`Delete chat "${name}"-\n\nThis permanently deletes all files, artifacts, and memory for this chat.`);
+          const ok = window.confirm(`Delete chat "${name}"?\n\nThis permanently deletes all files, artifacts, and memory for this chat.`);
           if (!ok) return;
 
           closeProjectMenu();
@@ -2896,16 +2608,14 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
             if (ws && ws.readyState === WebSocket.OPEN) {
               // Use canonical WS frame (no user bubble).
               try {
-                const frame = {
+                ws.send(JSON.stringify({
                   v: 1,
                   type: "chat.send",
                   text: "!switch project: default",
                   project: (currentProjectName || desiredProjectName || "default"),
                   active_expert: (activeExpert || "default"),
                   intent: {}
-                };
-                attachTrace(frame, "send");
-                ws.send(JSON.stringify(frame));
+                }));
               } catch (_) {}
             }
 
@@ -2980,16 +2690,14 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
             // Switch by name (never index)
             // Use canonical WS frame (no user bubble).
             try {
-              const frame = {
+              ws.send(JSON.stringify({
                 v: 1,
                 type: "chat.send",
                 text: "!switch project: " + name,
                 project: (currentProjectName || desiredProjectName || "default"),
                 active_expert: (activeExpert || "default"),
                 intent: {}
-              };
-              attachTrace(frame, "send");
-              ws.send(JSON.stringify(frame));
+              }));
             } catch (_) {}
 
             showThinking();
@@ -3143,7 +2851,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       ]);
 
       const dropStartsWith = [
-        "PATCH (anchor-based) - apply manually, or use the unified diff below",
+        "PATCH (anchor-based) — apply manually, or use the unified diff below",
         "Anchor patch instructions (copy/paste as-is):",
         "Unified diff patch (git apply -p1):",
       ];
@@ -3197,21 +2905,21 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     function hrefForToken(token) {
       const tok = (token || "").trim();
       if (!tok) return "";
-      return tok.startsWith("/file-path=") ? tok : ("/file-path=" + tok);
+      return tok.startsWith("/file?path=") ? tok : ("/file?path=" + tok);
     }
     // Display helper: show only the filename, keep the full path in title tooltips elsewhere.
     function prettyFileName(tokenOrHref) {
       let s = (tokenOrHref == null) ? "" : String(tokenOrHref).trim();
       if (!s) return "";
 
-      // Strip /file-path=
-      if (s.startsWith("/file-path=")) s = s.slice("/file-path=".length);
+      // Strip /file?path=
+      if (s.startsWith("/file?path=")) s = s.slice("/file?path=".length);
 
       // Decode percent escapes safely using the existing normalizer
       s = normalizeText(s, 2);
 
       // Drop querystring (if any)
-      s = s.split("-")[0];
+      s = s.split("?")[0];
 
       // Return last path segment
       const parts = s.split("/").filter(Boolean);
@@ -3222,13 +2930,13 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       const s = (rawText == null) ? "" : String(rawText);
 
       // Linkify:
-      // 1) Internal served files: /file-path=...
-      // 2) Raw project paths: projects/<user>/<project>/<...>  → /file-path=<that path>
+      // 1) Internal served files: /file?path=...
+      // 2) Raw project paths: projects/<user>/<project>/<...>  → /file?path=<that path>
       // 3) External URLs: https://... or http://...
       //
       // NOTE: We intentionally do NOT fetch external metadata/images (no previews).
       // We only make them clickable (best-of-both-worlds: safe + useful).
-      const re = /((\/file\-path=[^\s]+)|(projects\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/[^\s]+)|(https?:\/\/[^\s\)\]\}>,]+))/g;
+      const re = /((\/file\?path=[^\s]+)|(projects\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/[^\s]+)|(https?:\/\/[^\s\)\]\}>,]+))/g;
 
       let last = 0;
       let m;
@@ -3242,11 +2950,11 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         let href = "";
         let label = "";
 
-        if (token.startsWith("/file-path=")) {
+        if (token.startsWith("/file?path=")) {
           href = token;
           label = prettyFileName(token);
         } else if (token.startsWith("projects/")) {
-          href = "/file-path=" + token;
+          href = "/file?path=" + token;
           label = prettyFileName(token);
         } else if (token.startsWith("http://") || token.startsWith("https://")) {
           href = token;
@@ -3278,7 +2986,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         parent.appendChild(a);
 
         // Only show inline previews for INTERNAL served image files (never external URLs).
-        if ((token.startsWith("/file-path=") || token.startsWith("projects/")) && (isImagePathLike(token) || isImagePathLike(href))) {
+        if ((token.startsWith("/file?path=") || token.startsWith("projects/")) && (isImagePathLike(token) || isImagePathLike(href))) {
           const wrap = document.createElement("div");
           wrap.className = "file-preview";
 
@@ -3303,14 +3011,14 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       if (after) parent.appendChild(document.createTextNode(after));
     }
 
-    // Inline formatting: **bold**, `code`, and /file-path=... links inside all text.
+    // Inline formatting: **bold**, `code`, and /file?path=... links inside all text.
     function appendInlineFormatted(parent, rawText) {
       const s = (rawText == null) ? "" : String(rawText);
 
       // We parse a minimal subset:
       // - **bold**
       // - `code`
-      // Everything else is plain text, but we still linkify /file-path=... in plain segments.
+      // Everything else is plain text, but we still linkify /file?path=... in plain segments.
       let i = 0;
 
       function appendPlainSegment(seg, into) {
@@ -3364,13 +3072,13 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
 
           // If inline-code looks like a repo/file path, make it clickable.
           const looksLikePath =
-            content.startsWith("/file-path=") ||
+            content.startsWith("/file?path=") ||
             content.startsWith("projects/");
 
           if (looksLikePath) {
-            const href = content.startsWith("/file-path=")
+            const href = content.startsWith("/file?path=")
               ? content
-              : ("/file-path=" + content);
+              : ("/file?path=" + content);
 
             const a = document.createElement("a");
             a.className = "code-link";
@@ -3475,7 +3183,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         // treat these as “resume-worthy” primary documents
         return s.endsWith(".html") || s.endsWith(".pdf") || s.endsWith(".docx") || s.endsWith(".xlsx") || s.endsWith(".md");
       }
-      // If Open points to an image, it’s not “resume-worthy” - drop it.
+      // If Open points to an image, it’s not “resume-worthy” — drop it.
       if (parsed["Open"] && isImageLikePath(parsed["Open"]) && !isPrimaryDocPath(parsed["Open"])) {
         delete parsed["Open"];
         // also remove from items array so it doesn't show anywhere
@@ -3490,13 +3198,13 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
 
       function extractAllFileRefs(s) {
         const v = (s || "");
-        const re = /((\/file\-path=[^\s\)\]\}>,]+)|(projects\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/[^\s\)\]\}>,]+))/g;
+        const re = /((\/file\?path=[^\s\)\]\}>,]+)|(projects\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/[^\s\)\]\}>,]+))/g;
         const out = [];
         let m;
         while ((m = re.exec(v)) !== null) {
           const token = (m[1] || "").trim();
           if (!token) continue;
-          const href = token.startsWith("/file-path=") ? token : ("/file-path=" + token);
+          const href = token.startsWith("/file?path=") ? token : ("/file?path=" + token);
           out.push({ token, href });
         }
         return out;
@@ -3506,7 +3214,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         // 1) Prefer Open if it’s a primary doc
         const o = (parsed["Open"] || "").trim();
         if (o) {
-          const href = o.startsWith("/file-path=") ? o : ("/file-path=" + o);
+          const href = o.startsWith("/file?path=") ? o : ("/file?path=" + o);
           if (isPrimaryDocHref(href)) return { token: o, href };
         }
 
@@ -3531,15 +3239,15 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
 
       function extractFirstFileRef(s) {
         const v = (s || "");
-        // Match either /file-path=... OR raw projects/<user>/<project>/...
-        const re = /((\/file\-path=[^\s\)\]\}>,]+)|(projects\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/[^\s\)\]\}>,]+))/;
+        // Match either /file?path=... OR raw projects/<user>/<project>/...
+        const re = /((\/file\?path=[^\s\)\]\}>,]+)|(projects\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/[^\s\)\]\}>,]+))/;
         const m = v.match(re);
         if (!m) return null;
 
         const token = (m[1] || "").trim();
         if (!token) return null;
 
-        const href = token.startsWith("/file-path=") ? token : ("/file-path=" + token);
+        const href = token.startsWith("/file?path=") ? token : ("/file?path=" + token);
         return { token, href };
       }
 
@@ -3635,7 +3343,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         openRow.className = "resume-openrow";
 
         const hrefText = parsed["Open"].trim();
-        const href = hrefText.startsWith("/file-path=") ? hrefText : ("/file-path=" + hrefText);
+        const href = hrefText.startsWith("/file?path=") ? hrefText : ("/file?path=" + hrefText);
 
         const a = document.createElement("a");
         a.className = "resume-openbtn";
@@ -3694,15 +3402,15 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
     // Used by renderStructuredMessage() and others.
     function extractFirstFileRef(s) {
       const v = (s || "");
-      // Match either /file-path=... OR raw projects/<user>/<project>/...
-      const re = /((\/file\-path=[^\s\)\]\}>,]+)|(projects\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/[^\s\)\]\}>,]+))/;
+      // Match either /file?path=... OR raw projects/<user>/<project>/...
+      const re = /((\/file\?path=[^\s\)\]\}>,]+)|(projects\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/[^\s\)\]\}>,]+))/;
       const m = v.match(re);
       if (!m) return null;
 
       const token = (m[1] || "").trim();
       if (!token) return null;
 
-      const href = token.startsWith("/file-path=") ? token : ("/file-path=" + token);
+      const href = token.startsWith("/file?path=") ? token : ("/file?path=" + token);
       return { token, href };
     }
 
@@ -3757,7 +3465,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
           } catch (_) {}
 
           if (sourceUrl) {
-            // Caption as "caption - source"
+            // Caption as "caption — source"
             const a = document.createElement("a");
             a.href = sourceUrl;
             a.target = "_blank";
@@ -3822,7 +3530,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
 
       // Structure:
       // - "# " => h3, "## " => h4
-      // ? "Title:" (short line ending in colon) => h4  (heuristic)
+      // - "Title:" (short line ending in colon) => h4  (heuristic)
       // - "- " bullets => ul
       // - "1." / "1)" => ol
       // - everything else => paragraphs
@@ -3830,7 +3538,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       // Inline formatting supported everywhere:
       // - **bold**
       // - `code`
-      // - /file-path=... links
+      // - /file?path=... links
       let i = 0;
       while (i < lines.length) {
         // Fenced code blocks: preserve formatting exactly.
@@ -3873,9 +3581,9 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         }
 
         const trimmed = line.trim();
-        // Message-body action affordances (but never inside Resume cards - Resume renderer owns that UI)
+        // Message-body action affordances (but never inside Resume cards — Resume renderer owns that UI)
         if (!container.closest(".resume-card")) {
-          // Special-case: "Open: /file-path=..." should look like a clear action button
+          // Special-case: "Open: /file?path=..." should look like a clear action button
           if (/^Open:\s+/i.test(trimmed)) {
             const after = trimmed.replace(/^Open:\s+/i, "").trim();
             const ref = extractFirstFileRef(after) || extractFirstFileRef(trimmed);
@@ -3928,7 +3636,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         // This makes typical assistant output look structured without requiring the model to emit markdown.
         {
           const m = trimmed.match(/^([A-Za-z][A-Za-z0-9 _-]{0,32}):\s+(.+)$/);
-          if (m && !trimmed.startsWith("/file-path=") && !trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+          if (m && !trimmed.startsWith("/file?path=") && !trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
             const label = (m[1] || "").trim();
             const rest = (m[2] || "").trim();
 
@@ -3939,7 +3647,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
 
             // If rest contains "1) ... 2) ...", convert to ordered list
             if (/(\b1\)\s+).*(\b2\)\s+)/.test(rest)) {
-              const parts = rest.split(/\s+(-=\d+\)\s+)/).filter(Boolean);
+              const parts = rest.split(/\s+(?=\d+\)\s+)/).filter(Boolean);
               const ol = document.createElement("ol");
               for (const part of parts) {
                 const li = document.createElement("li");
@@ -3976,12 +3684,12 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         }
 
         // Heuristic subheading: short "Something:" lines become h4
-        // Avoid treating "/file-path=..." or long sentences as headings.
+        // Avoid treating "/file?path=..." or long sentences as headings.
         if (
           trimmed.endsWith(":") &&
           trimmed.length <= 54 &&
           !trimmed.startsWith("- ") &&
-          !trimmed.includes("/file-path=") &&
+          !trimmed.includes("/file?path=") &&
           !trimmed.includes("http://") &&
           !trimmed.includes("https://")
         ) {
@@ -4113,7 +3821,6 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       try {
         if (logEl) logEl.innerHTML = "";
       } catch (_) {}
-      clearExpertNotice();
     }
 
     function replayThreadToUI(projectName) {
@@ -4138,7 +3845,6 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       } else {
         clearChatUI();
       }
-      clearExpertNotice();
     }
 
     function threadPush(projectName, entry) {
@@ -4337,7 +4043,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       // - do NOT render as a chat bubble (prevents duplicates).
       try {
         if (role === "assistant" && looksLikeResumeOrPulseBlob(text)) {
-          // New project (no goal): don't "resume" into a Pulse ? just show the friendly onboarding.
+          // New project (no goal): don't "resume" into a Pulse — just show the friendly onboarding.
           if (isBootstrapResumeBlob(text)) {
             // UI deterministic welcome disabled.
             // The backend greeting is requested after thread.history via greeting.request.
@@ -4484,26 +4190,68 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
         logEl.scrollTop = logEl.scrollHeight;
       }
     }
-    // --- Unified "thinking" signal (top progress bar only; no chat bubble) ---
-    let thinkingActive = false;
-    let thinkingCount = 0;
 
-    function showThinking() {
-      thinkingCount += 1;
-      if (thinkingCount > 1) return;
-      thinkingActive = true;
-      if (window.BatchProgress && typeof window.BatchProgress.startIndeterminate === "function") {
-        window.BatchProgress.startIndeterminate();
+    // --- Friendly "thinking…" indicator (animated so it never feels frozen) ---
+    let thinkingBubble = null;
+    let thinkingTimer = null;
+    let thinkingDotsTimer = null;
+    let thinkingBaseText = "… thinking";
+    let thinkingDotCount = 0;
+
+    function startThinkingDots() {
+      stopThinkingDots();
+      thinkingDotCount = 0;
+
+      thinkingDotsTimer = setInterval(() => {
+        if (!thinkingBubble) return;
+
+        thinkingDotCount = (thinkingDotCount + 1) % 4; // 0..3
+        const dots = ".".repeat(thinkingDotCount);
+        thinkingBubble.textContent = thinkingBaseText + dots;
+      }, 350);
+    }
+
+    function stopThinkingDots() {
+      if (thinkingDotsTimer) {
+        clearInterval(thinkingDotsTimer);
+        thinkingDotsTimer = null;
       }
     }
 
+    function showThinking() {
+      if (thinkingBubble) return;
+
+      thinkingBaseText = "thinking";
+      thinkingDotCount = 1;
+
+      thinkingBubble = document.createElement("div");
+      thinkingBubble.className = "chat-bubble chat-info";
+      thinkingBubble.textContent = thinkingBaseText;
+
+      logEl.appendChild(thinkingBubble);
+      thinkingBubble.scrollIntoView({ block: "start", behavior: "smooth" });
+
+      startThinkingDots();
+
+      // After a bit, change the base text but KEEP animating dots
+      thinkingTimer = setTimeout(() => {
+        if (thinkingBubble) {
+          thinkingBaseText = "still working on it";
+        }
+      }, 3000);
+    }
+
     function hideThinking() {
-      if (thinkingCount > 0) thinkingCount -= 1;
-      if (thinkingCount > 0) return;
-      thinkingActive = false;
-      if (window.BatchProgress && typeof window.BatchProgress.stopIndeterminate === "function") {
-        window.BatchProgress.stopIndeterminate();
+      if (thinkingTimer) {
+        clearTimeout(thinkingTimer);
+        thinkingTimer = null;
       }
+      stopThinkingDots();
+
+      if (thinkingBubble && thinkingBubble.parentNode) {
+        thinkingBubble.parentNode.removeChild(thinkingBubble);
+      }
+      thinkingBubble = null;
     }
 
     function appendInfo(text) {
@@ -4576,16 +4324,14 @@ function createNewChat(opts = {}) {
     try { ensureThreadVisibleForProject(name); } catch (_) {}
 
     try {
-      const frame = {
+      ws.send(JSON.stringify({
         v: 1,
         type: "chat.send",
         text: "!switch project: " + name,
         project: (currentProjectName || desiredProjectName || "default"),
         active_expert: (activeExpert || "default"),
         intent: {}
-      };
-      attachTrace(frame, "send");
-      ws.send(JSON.stringify(frame));
+      }));
     } catch (_) {}
 
     showThinking();
@@ -4741,9 +4487,6 @@ function updateProjectName(name) {
       }
     }
 
-    let reconnectAttempt = 0;
-    let reconnectTimer = null;
-
     function scheduleReconnect() {
       if (manualClose) return;
       if (reconnectTimer) return;
@@ -4866,16 +4609,14 @@ function updateProjectName(name) {
             if (!alreadyThere) {
               // Use canonical WS frame (no user bubble).
               try {
-                const frame = {
+                ws.send(JSON.stringify({
                   v: 1,
                   type: "chat.send",
                   text: "!switch project: " + desired,
                   project: desired,
                   active_expert: (activeExpert || "default"),
                   intent: { startup: "restore" }
-                };
-                attachTrace(frame, "send");
-                ws.send(JSON.stringify(frame));
+                }));
               } catch (_) {}
             }
 
@@ -4884,7 +4625,7 @@ function updateProjectName(name) {
               try { requestThreadHistoryOnce(desired, "restore"); } catch (_) {}
             }, 200);
 
-            // Startup: do NOT request "!last answer" ? thread.get already replays the canonical chat.
+            // Startup: do NOT request "!last answer" — thread.get already replays the canonical chat.
             // This avoids flicker/reorder jitter on load.
           }, 250);
 
@@ -4929,7 +4670,7 @@ function updateProjectName(name) {
             manualClose = true;
             stopWsHeartbeat();
             setStatus("Login required");
-            showLogin("Session expired - please log in again.");
+            showLogin("Session expired — please log in again.");
             ws = null;
             return;
           }
@@ -4937,7 +4678,7 @@ function updateProjectName(name) {
           console.log("[WS] Closed:", { url: triedUrl, code, reason, wasClean });
 
           // Never show querystring creds in the UI log.
-          const safeUrl = (triedUrl || "").split("-")[0];
+          const safeUrl = (triedUrl || "").split("?")[0];
 
           // If the page is hidden, close quietly (no spam).
           // BUT: remember it died while hidden so we can reconnect on resume.
@@ -4952,7 +4693,7 @@ function updateProjectName(name) {
           appendInfo(
             `[INFO] Connection closed: ${safeUrl}` +
             `${code ? " (code " + code + ")" : ""}` +
-            `${reason ? " - " + reason : ""}`
+            `${reason ? " — " + reason : ""}`
           );
 
           // PWA policy: reconnect automatically unless user explicitly disconnected or login is required.
@@ -4989,6 +4730,9 @@ function updateProjectName(name) {
         };
 
       ws.onmessage = (event) => {
+        // Any message from server means the "thinking…" indicator can stop.
+        hideThinking();
+
         const raw = event.data;
 
         // Heartbeat pong
@@ -5026,14 +4770,6 @@ function updateProjectName(name) {
               // Preferred framed messages
               if (obj.v === 1 && typeof obj.type === "string") {
                 const t = obj.type;
-                try {
-                  const tid = String(obj.trace_id || "").trim();
-                  if (tid) {
-                    lastTraceId = tid;
-                    recordTraceEvent({ dir: "recv", type: t, trace_id: tid, ts: new Date().toISOString() });
-                    console.log("[TRACE] recv", t, tid);
-                  }
-                } catch (_) {}
                  // Heartbeat pong (framed)
                  if (t === "ws.pong") {
                    wsLastPongAt = Date.now();
@@ -5048,28 +4784,6 @@ function updateProjectName(name) {
                     window.UploadCenter.consumeStatusFrame(obj);
                     return; // critical: stop chat append
                   }
-                }
-                if (t === "upload.batch.progress") {
-                  if (
-                    window.BatchProgress &&
-                    typeof window.BatchProgress.consumeFrame === "function"
-                  ) {
-                    window.BatchProgress.consumeFrame(obj);
-                    return; // critical: stop chat append
-                  }
-                }
-                // Debug usage frames (hidden panel)
-                if (t === "debug.usage") {
-                  lastUsageFrame = obj;
-                  if (debugVisible) renderUsageDebug();
-                  return; // critical: stop chat append
-                }
-                if (t === "trace.dump") {
-                  try {
-                    serverTraceDump = Array.isArray(obj.events) ? obj.events : [];
-                    if (traceVisible) renderTraceDebug();
-                  } catch (_) {}
-                  return; // critical: stop chat append
                 }
 
                 // Thread history (server-backed, token-free)
@@ -5106,9 +4820,7 @@ function updateProjectName(name) {
                         if ((now - last) >= 6000) {
                           __greetReqLastAt[p] = now;
                           const reason = (msgs.length === 0) ? "new_project" : "switch_project";
-                          const frame = { v: 1, type: "greeting.request", project: p, reason };
-                          attachTrace(frame, "send");
-                          ws.send(JSON.stringify(frame));
+                          ws.send(JSON.stringify({ v: 1, type: "greeting.request", project: p, reason }));
                         }
                       }
                     } catch (_) {}
@@ -5132,10 +4844,10 @@ function updateProjectName(name) {
                 else if (typeof obj.href === "string") payload = "Open: " + obj.href;
                 else if (typeof obj.path === "string") {
                   const p = String(obj.path || "").trim();
-                  payload = "Open: " + (p.startsWith("/file-path=") ? p : (p.startsWith("projects/") ? ("/file-path=" + p) : p));
+                  payload = "Open: " + (p.startsWith("/file?path=") ? p : (p.startsWith("projects/") ? ("/file?path=" + p) : p));
                 } else if (typeof obj.relative_path === "string") {
                   const p = String(obj.relative_path || "").trim();
-                  payload = "Open: " + (p.startsWith("/file-path=") ? p : (p.startsWith("projects/") ? ("/file-path=" + p) : p));
+                  payload = "Open: " + (p.startsWith("/file?path=") ? p : (p.startsWith("projects/") ? ("/file?path=" + p) : p));
                 }
               }
             }
@@ -5267,14 +4979,14 @@ function updateProjectName(name) {
             return;
           }
 
-          // We expect exactly: "/file-path=projects/.../artifacts/assistant_output_...md"
-          if (age <= 3500 && msg.startsWith("/file-path=")) {
+          // We expect exactly: "/file?path=projects/.../artifacts/assistant_output_...md"
+          if (age <= 3500 && msg.startsWith("/file?path=")) {
             __lastAnswerFetchPending = false;
 
             // Fetch the file content and append as assistant
             fetchAndAppendAssistantOutputHref(msg);
 
-            // Do NOT display the /file-path line in chat
+            // Do NOT display the /file?path line in chat
             return;
           }
 
@@ -5303,7 +5015,7 @@ function updateProjectName(name) {
           const onboardProject = parseProjectNameFromMsg(msg) || currentProjectName || "default";
 
           appendChat(
-            "New chat - let's get you set up.\n\nWhat are we trying to accomplish here-",
+            "New chat - let's get you set up.\n\nWhat are we trying to accomplish here?",
             "assistant"
           );
 
@@ -5336,8 +5048,7 @@ function updateProjectName(name) {
         // We still rely on earlier filtering to remove plumbing noise.
         const shown = msg;
 
-        // Never show "Server:" ? keep the conversation human on all devices.
-        hideThinking();
+        // Never show "Server:" — keep the conversation human on all devices.
         appendChat(shown, "assistant");
 
 
@@ -5383,8 +5094,8 @@ function updateProjectName(name) {
         `Put the full HTML into a block tagged exactly: [DELIVERABLE_HTML] ... [/DELIVERABLE_HTML].\n` +
         `Never paste the HTML into the chat text. USER_ANSWER must stay short and readable.\n` +
         `Do NOT invent file paths. The server will save the deliverable and the UI will get a real /file link.\n` +
-        `In [USER_ANSWER], give a short summary and end with: "Open: /file-path=..." only if provided by the server.\n` +
-        `If images are requested, include them in the HTML and also output their /file-path links.\n` +
+        `In [USER_ANSWER], give a short summary and end with: "Open: /file?path=..." only if provided by the server.\n` +
+        `If images are requested, include them in the HTML and also output their /file?path links.\n` +
         `[/DELIVERABLE]\n`
       );
     }
@@ -5488,7 +5199,7 @@ function updateProjectName(name) {
         `\n\n[GOAL_ONBOARD]\n` +
         `We are starting a NEW project named "${p}". The goal is not set.\n` +
         `Act like a professional guiding the user. Ask at most 2 short clarifying questions.\n` +
-        `Then propose a single crisp goal sentence and ASK: "Confirm- (yes/no)".\n` +
+        `Then propose a single crisp goal sentence and ASK: "Confirm? (yes/no)".\n` +
         `If user confirms, output a line exactly like: Goal: <final goal> (and nothing else on that line).\n` +
         `Do NOT mention other projects unless the user explicitly asks.\n` +
         `[/GOAL_ONBOARD]\n`
@@ -5547,7 +5258,6 @@ function updateProjectName(name) {
           active_expert: (activeExpert || "default"),
           intent: {}
         };
-        attachTrace(frame, "send");
         ws.send(JSON.stringify(frame));
         showThinking();
       } catch (e) {
@@ -5810,16 +5520,14 @@ function updateProjectName(name) {
             // Switch by name (not by index)
             // Use canonical WS frame (no user bubble).
             try {
-              const frame = {
+              ws.send(JSON.stringify({
                 v: 1,
                 type: "chat.send",
                 text: "!switch project: " + name,
                 project: (currentProjectName || desiredProjectName || "default"),
                 active_expert: (activeExpert || "default"),
                 intent: {}
-              };
-              attachTrace(frame, "send");
-              ws.send(JSON.stringify(frame));
+              }));
             } catch (_) {}
 
             showThinking();
@@ -5948,30 +5656,6 @@ function updateProjectName(name) {
         return b; // last resort: create new
       }
 
-      function isAnalysisHat() {
-        return String(activeExpert || "").trim().toLowerCase() === "analysis";
-      }
-
-      function requestSynthesis(it, opts = {}) {
-        try {
-          if (!it) return;
-          if (!ws || ws.readyState !== WebSocket.OPEN) return;
-          const proj = String(currentProjectName || "default").trim() || "default";
-          const payload = {
-            v: 1,
-            type: "upload.synthesize",
-            project: proj,
-            file_key: String(it.key || "").trim(),
-            relative_path: String(it.relPath || "").trim(),
-            orig_name: String(it.originalName || it.key || "").trim(),
-            force: !!opts.force
-          };
-          attachTrace(payload, "send");
-          ws.send(JSON.stringify(payload));
-          showThinking();
-        } catch (_) {}
-      }
-
       function setIndicatorActive(on) {
         if (!indicator) return;
         indicator.classList.toggle("active", !!on);
@@ -6086,9 +5770,6 @@ function updateProjectName(name) {
         } catch (_) {}
 
         const list = Array.from(items.values());
-        const useAnalysisAction = isAnalysisHat();
-        const actionLabel = useAnalysisAction ? "Analyze" : "Insert to chat";
-        const actionName = useAnalysisAction ? "analyze" : "insert";
 
         menu.innerHTML = `
           <div class="uploadMenuHeader">
@@ -6108,7 +5789,7 @@ function updateProjectName(name) {
               </div>
               <div class="uploadItemActions">
                 <button class="uploadMiniBtn" data-action="toggle" type="button">${it.open ? "Hide" : "Details"}</button>
-                <button class="uploadMiniBtn primary" data-action="${actionName}" type="button">${actionLabel}</button>
+                <button class="uploadMiniBtn primary" data-action="insert" type="button">Insert to chat</button>
               </div>
               <div class="uploadDetail">${escapeHtml(it.detail || "")}</div>
             </div>
@@ -6171,11 +5852,6 @@ function updateProjectName(name) {
 
               return;
             }
-            if (action === "analyze") {
-              // Manual re-run (analysis hat). Does not insert text into chat.
-              requestSynthesis(it, { force: true });
-              return;
-            }
 
           };
         });
@@ -6223,8 +5899,6 @@ function updateProjectName(name) {
         const status = String(frame && frame.status ? frame.status : "").trim().toLowerCase();
         const detail = String(frame && frame.detail ? frame.detail : "").trim();
         const relPath = String(frame && frame.relative_path ? frame.relative_path : "").trim();
-        const batchId = String(frame && frame.batch_id ? frame.batch_id : "").trim();
-        const analysisVer = String(frame && frame.analysis_version ? frame.analysis_version : "").trim();
 
         // Ignore frames for other projects
         if (project !== (currentProjectName || "default")) return;
@@ -6234,14 +5908,11 @@ function updateProjectName(name) {
         if (!it) return;
 
         if (relPath) it.relPath = relPath;
-        if (batchId) it.batchId = batchId;
-        if (analysisVer) it.analysisVersion = analysisVer;
 
         if (status === "queued") {
           it.status = "processing";
           it.detail = detail || it.detail || "";
           render();
-          if (isAnalysisHat()) showThinking();
           return;
         }
 
@@ -6249,12 +5920,6 @@ function updateProjectName(name) {
           it.status = "done";
           it.detail = detail || it.detail || "";
           render();
-
-          // Analysis hat: auto-synthesize on completion (skip ZIP batch files).
-          if (isAnalysisHat() && !it.synthTriggered && !it.batchId) {
-            it.synthTriggered = true;
-            requestSynthesis(it, { force: false });
-          }
 
           if (activeCount > 0) activeCount = Math.max(0, activeCount - 1);
           setIndicatorActive(activeCount > 0);
@@ -6318,125 +5983,10 @@ function updateProjectName(name) {
         startBatch,
         markUploaded,
         consumeStatusFrame,
-        markError,
-        refresh: render,
-        requestSynthesis
+        markError
       };
     })();
     window.UploadCenter = UploadCenter;
-
-    // --- Batch progress bar (top bar) ---
-    const BatchProgress = (() => {
-      let track = document.getElementById("batchProgressTrack");
-      let bar = document.getElementById("batchProgressBar");
-      if (!track) {
-        track = document.createElement("div");
-        track.id = "batchProgressTrack";
-        track.setAttribute("aria-hidden", "true");
-        document.body.appendChild(track);
-      }
-      if (!bar) {
-        bar = document.createElement("div");
-        bar.id = "batchProgressBar";
-        track.appendChild(bar);
-      }
-
-      let hideTimer = null;
-      let indeterminateCount = 0;
-      let determinateActive = false;
-
-      function show() {
-        if (!track) return;
-        track.style.display = "block";
-      }
-      function hideSoon() {
-        if (!track || !bar) return;
-        try { if (hideTimer) clearTimeout(hideTimer); } catch (_) {}
-        hideTimer = setTimeout(() => {
-          if (determinateActive || indeterminateCount > 0) return;
-          track.style.display = "none";
-          track.classList.remove("indeterminate");
-          bar.style.width = "0%";
-        }, 900);
-      }
-
-      function startIndeterminate() {
-        if (!track || !bar) return;
-        indeterminateCount += 1;
-        if (determinateActive) return;
-        track.classList.add("indeterminate");
-        show();
-      }
-
-      function stopIndeterminate() {
-        if (!track || !bar) return;
-        if (indeterminateCount > 0) indeterminateCount -= 1;
-        if (indeterminateCount > 0) return;
-        if (!determinateActive) hideSoon();
-      }
-
-      function isActive() {
-        return determinateActive || indeterminateCount > 0;
-      }
-
-      function consumeFrame(frame) {
-        if (!track || !bar) return;
-        const project = String(frame && frame.project ? frame.project : (currentProjectName || "default")).trim() || "default";
-        if (project !== (currentProjectName || "default")) return;
-
-        const total = Number(frame && frame.total ? frame.total : 0);
-        const done = Number(frame && frame.done ? frame.done : 0);
-        const state = String(frame && frame.state ? frame.state : "progress").trim().toLowerCase();
-
-        if (state === "finalizing") {
-          determinateActive = false;
-          track.classList.remove("indeterminate");
-          track.classList.add("finalizing");
-          show();
-          bar.style.width = "100%";
-          return;
-        }
-
-        if (!total || total <= 0) {
-          if (!determinateActive) {
-            track.classList.add("indeterminate");
-            track.classList.remove("finalizing");
-            show();
-          }
-          return;
-        }
-
-        determinateActive = true;
-        track.classList.remove("indeterminate");
-        track.classList.remove("finalizing");
-        show();
-
-        const pct = Math.max(2, Math.min(100, Math.round((done / total) * 100)));
-        bar.style.width = pct + "%";
-
-        if (state === "done" || done >= total) {
-          bar.style.width = "100%";
-          determinateActive = false;
-          if (state === "done") {
-            track.classList.remove("finalizing");
-            if (indeterminateCount > 0) {
-              track.classList.add("indeterminate");
-              show();
-            } else {
-              hideSoon();
-            }
-          } else {
-            // If we hit total but summary is still running, keep a visible pulse.
-            track.classList.remove("indeterminate");
-            track.classList.add("finalizing");
-            show();
-          }
-        }
-      }
-
-      return { consumeFrame, startIndeterminate, stopIndeterminate, isActive };
-    })();
-    window.BatchProgress = BatchProgress;
 
     async function handleFiles(fileList) {
       const n = fileList ? fileList.length : 0;
@@ -6452,7 +6002,7 @@ function updateProjectName(name) {
       const formData = new FormData();
       formData.append("file", file);
 
-      // No chat spam; just show progress in the top bar
+      // No chat spam; just animate the bubble
       showThinking();
 
       try {
@@ -6549,7 +6099,7 @@ function updateProjectName(name) {
       const p = (currentProjectName || desiredProjectName || "default").trim() || "default";
 
       // Only greet on NEW/EMPTY projects:
-      // ? no goal yet (UI line is "Goal: (none yet)" / "Not set")
+      // - no goal yet (UI line is "Goal: (none yet)" / "Not set")
       // - no prior assistant chat stored for this project
       // - chat log is currently empty
       const goalText = (currentGoalLine && currentGoalLine.textContent) ? String(currentGoalLine.textContent) : "";
@@ -6603,7 +6153,7 @@ function updateProjectName(name) {
       }
 
       const lines = [];
-      lines.push(`${timeOfDayGreeting()}. What can I help you with today-`);
+      lines.push(`${timeOfDayGreeting()}. What can I help you with today?`);
       lines.push("You’re welcome to upload a file, or just tell me what you’re thinking and we can take it from there.");
 
       appendChat(lines.join("\n"), "assistant");
@@ -6620,7 +6170,7 @@ function updateProjectName(name) {
       if (!href) return;
 
       // Only intercept our served file route
-      if (href.startsWith("/file-path=")) {
+      if (href.startsWith("/file?path=")) {
         e.preventDefault();
         try {
           window.open(href, "_blank", "noopener");
@@ -6641,7 +6191,7 @@ function updateProjectName(name) {
       const href = (a.getAttribute("href") || "").trim();
       if (!href) return;
 
-      if (href.startsWith("/file-path=")) {
+      if (href.startsWith("/file?path=")) {
         if (!a.target) a.target = "_blank";
         if (!a.rel) a.rel = "noopener";
         // Let default navigation occur (in new tab).

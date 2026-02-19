@@ -35,106 +35,9 @@ import subprocess
 import sys
 import uuid
 import contextvars
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-# ---------------------------------------------------------------------------
-# Trace Spine (low-overhead, explicit spans only)
-# ---------------------------------------------------------------------------
-def get_ts_monotonic() -> float:
-    try:
-        return float(time.monotonic())
-    except Exception:
-        return 0.0
-
-class TraceSpine:
-    def __init__(self, max_events: int = 2000) -> None:
-        self._counts: Dict[str, Dict[str, int]] = {}
-        self._events = deque(maxlen=max_events if max_events and max_events > 0 else 2000)
-
-    def new_trace(self, action: str, conn_id: str, project: str, trace_id: Optional[str] = None, detail: Optional[Dict[str, Any]] = None) -> str:
-        try:
-            tid = str(trace_id or "").strip() or f"trace_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-            if tid not in self._counts:
-                self._counts[tid] = {}
-            if action:
-                self.span(tid, action, project, detail=detail, conn_id=conn_id)
-            return tid
-        except Exception:
-            return str(trace_id or "").strip() or f"trace_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-
-    def span(self, trace_id: str, event_type: str, project: str, detail: Optional[Dict[str, Any]] = None, conn_id: str = "") -> None:
-        try:
-            tid = str(trace_id or "").strip()
-            et = str(event_type or "").strip()
-            if not tid or not et:
-                return
-            c = self._counts.get(tid)
-            if not isinstance(c, dict):
-                c = {}
-            n = int(c.get(et) or 0) + 1
-            c[et] = n
-            self._counts[tid] = c
-
-            obj: Dict[str, Any] = {
-                "trace_id": tid,
-                "conn_id": str(conn_id or ""),
-                "project": str(project or ""),
-                "event_type": et,
-                "ts_monotonic": get_ts_monotonic(),
-                "count": n,
-            }
-            if isinstance(detail, dict) and detail:
-                obj["detail"] = detail
-            self._events.append(obj)
-            print(json.dumps(obj, ensure_ascii=False))
-        except Exception:
-            pass
-
-    def summary(self, trace_id: str, conn_id: str = "", project: str = "") -> None:
-        try:
-            tid = str(trace_id or "").strip()
-            if not tid:
-                return
-            c = self._counts.get(tid)
-            if not isinstance(c, dict) or not c:
-                return
-            obj = {
-                "trace_id": tid,
-                "conn_id": str(conn_id or ""),
-                "project": str(project or ""),
-                "event_type": "trace.summary",
-                "ts_monotonic": get_ts_monotonic(),
-                "count": 1,
-                "detail": {"counts": c},
-            }
-            self._events.append(obj)
-            print(json.dumps(obj, ensure_ascii=False))
-        except Exception:
-            pass
-
-    def dump_events(self, last: int = 200, trace_id: str = "") -> List[Dict[str, Any]]:
-        try:
-            n = int(last or 0)
-        except Exception:
-            n = 200
-        if n <= 0:
-            n = 200
-        if n > 500:
-            n = 500
-        try:
-            tid = str(trace_id or "").strip()
-            items = list(self._events)
-            if tid:
-                items = [e for e in items if isinstance(e, dict) and str(e.get("trace_id") or "") == tid]
-            if n and len(items) > n:
-                items = items[-n:]
-            return items
-        except Exception:
-            return []
-
-_TRACE = TraceSpine()
 # -----------------------------------------------------------------------------
 # Per-turn audit trace id (context-local via asyncio ContextVar)
 # -----------------------------------------------------------------------------
@@ -143,84 +46,6 @@ _AUDIT_TRACE_ID = contextvars.ContextVar("audit_trace_id", default="")
 # Per-turn audit decision context (context-local; merged into every audit record)
 # -----------------------------------------------------------------------------
 _AUDIT_CTX = contextvars.ContextVar("audit_ctx", default={})
-
-# ---------------------------------------------------------------------------
-# Per-turn usage tracking (context-local)
-# ---------------------------------------------------------------------------
-_USAGE_CTX = contextvars.ContextVar("usage_ctx", default={})
-_USAGE_SENT = contextvars.ContextVar("usage_sent", default=False)
-_USAGE_TOTAL: Dict[str, Any] = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "by_model": {}}
-
-def _usage_ctx_reset() -> None:
-    try:
-        _USAGE_CTX.set({"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "by_model": {}})
-        _USAGE_SENT.set(False)
-    except Exception:
-        pass
-
-def _usage_ctx_get() -> Dict[str, Any]:
-    try:
-        v = _USAGE_CTX.get()
-        return v if isinstance(v, dict) else {}
-    except Exception:
-        return {}
-
-def _usage_ctx_add(*, model: str, usage: Dict[str, Any]) -> None:
-    try:
-        if not isinstance(usage, dict):
-            return
-        u = _usage_ctx_get()
-        if not isinstance(u, dict):
-            u = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "by_model": {}}
-        u.setdefault("calls", 0)
-        u.setdefault("prompt_tokens", 0)
-        u.setdefault("completion_tokens", 0)
-        u.setdefault("total_tokens", 0)
-        u.setdefault("by_model", {})
-
-        p = int(usage.get("prompt_tokens") or 0)
-        c = int(usage.get("completion_tokens") or 0)
-        t = int(usage.get("total_tokens") or (p + c))
-        u["calls"] = int(u.get("calls") or 0) + 1
-        u["prompt_tokens"] = int(u.get("prompt_tokens") or 0) + p
-        u["completion_tokens"] = int(u.get("completion_tokens") or 0) + c
-        u["total_tokens"] = int(u.get("total_tokens") or 0) + t
-
-        m = (model or "unknown").strip() or "unknown"
-        bm = u.get("by_model") if isinstance(u.get("by_model"), dict) else {}
-        cur = bm.get(m) if isinstance(bm.get(m), dict) else {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        cur["calls"] = int(cur.get("calls") or 0) + 1
-        cur["prompt_tokens"] = int(cur.get("prompt_tokens") or 0) + p
-        cur["completion_tokens"] = int(cur.get("completion_tokens") or 0) + c
-        cur["total_tokens"] = int(cur.get("total_tokens") or 0) + t
-        bm[m] = cur
-        u["by_model"] = bm
-        _USAGE_CTX.set(u)
-
-        # Update total accumulator
-        try:
-            _USAGE_TOTAL["calls"] = int(_USAGE_TOTAL.get("calls") or 0) + 1
-            _USAGE_TOTAL["prompt_tokens"] = int(_USAGE_TOTAL.get("prompt_tokens") or 0) + p
-            _USAGE_TOTAL["completion_tokens"] = int(_USAGE_TOTAL.get("completion_tokens") or 0) + c
-            _USAGE_TOTAL["total_tokens"] = int(_USAGE_TOTAL.get("total_tokens") or 0) + t
-            bm2 = _USAGE_TOTAL.get("by_model") if isinstance(_USAGE_TOTAL.get("by_model"), dict) else {}
-            cur2 = bm2.get(m) if isinstance(bm2.get(m), dict) else {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            cur2["calls"] = int(cur2.get("calls") or 0) + 1
-            cur2["prompt_tokens"] = int(cur2.get("prompt_tokens") or 0) + p
-            cur2["completion_tokens"] = int(cur2.get("completion_tokens") or 0) + c
-            cur2["total_tokens"] = int(cur2.get("total_tokens") or 0) + t
-            bm2[m] = cur2
-            _USAGE_TOTAL["by_model"] = bm2
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-def _usage_totals_snapshot() -> Dict[str, Any]:
-    try:
-        return json.loads(json.dumps(_USAGE_TOTAL))
-    except Exception:
-        return dict(_USAGE_TOTAL)
 
 def _audit_ctx_reset() -> None:
     """
@@ -321,7 +146,6 @@ def audit_event(project_full: str, event: Dict[str, Any]) -> None:
     except Exception:
         pass
 import path_engine
-from path_engine import now_iso
 from lens0_config import TEXT_LIKE_SUFFIXES, IMAGE_SUFFIXES, is_text_suffix, mime_for_image_suffix
 
 import project_store
@@ -361,13 +185,6 @@ from project_store import (
     save_user_pending_profile_question,
     clear_user_pending_profile_question,
     is_user_pending_profile_question_unexpired,
-    file_sha256_bytes,
-    read_text_file,
-    read_bytes_file,
-    atomic_write_text,
-    atomic_write_bytes,
-    load_pdf_text,
-    load_image_ocr,
 )
 
 
@@ -542,19 +359,6 @@ HTTP_PORT = int((os.environ.get("LENS0_HTTP_PORT") or "").strip() or ports_for_c
 OPENAI_MODEL = (os.environ.get("OPENAI_MODEL") or "gpt-5.2").strip()
 MAX_HISTORY_PAIRS = int(os.environ.get("LENS0_MAX_HISTORY_PAIRS") or "10")
 PATCH_MAX_CONTEXT_CHARS = int(os.environ.get("LENS0_PATCH_MAX_CONTEXT_CHARS") or "260000")
-# Model-call gating (cost control; defaults are conservative and should be behavior-neutral)
-def _env_flag(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in ("1", "true", "yes", "on")
-
-def _env_choice(name: str, default: str, allowed: Tuple[str, ...]) -> str:
-    v = str(os.environ.get(name, default) or "").strip().lower()
-    return v if v in allowed else default
-
-PREFLIGHT_INTENT_ENABLED = _env_flag("LENS0_PREFLIGHT_INTENT", "0")
-PREFLIGHT_NEEDS_WORLD_MODE = _env_choice("LENS0_PREFLIGHT_NEEDS_WORLD", "auto", ("auto", "always", "off"))
-CONTINUITY_MODEL_MODE = _env_choice("LENS0_CONTINUITY_MODEL", "auto", ("auto", "always", "off"))
-ANALYSIS_BACKFILL_MODE = _env_choice("LENS0_ANALYSIS_BACKFILL_MODE", "on_upload_only", ("on_upload_only", "always", "off"))
-DEBUG_USAGE_ENABLED = _env_flag("LENS0_DEBUG_USAGE", "1")
 # Brave Search (web lookup)
 BRAVE_API_KEY = (os.getenv("BRAVE_API_KEY", "") or "").strip()
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
@@ -1543,6 +1347,12 @@ def _maybe_start_profile_gap_questions(user: str) -> Tuple[bool, str]:
     q0 = str(q0 or "").strip()
     return True, q0 or "What should I remember about you?"
 
+def now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+def safe_project_name(name: str) -> str:
+    return path_engine.safe_project_name(name, default_project_name=DEFAULT_PROJECT_NAME)
+
 def safe_user_name(user: str) -> str:
     """
     Sanitize the user segment for on-disk paths.
@@ -1589,6 +1399,14 @@ def get_user_projects_root(user: str) -> Path:
 
     return root
 
+def file_sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data or b"").hexdigest()
+
+def read_text_file(path: Path, *, errors: str = "replace") -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors=errors)
+    except Exception:
+        return ""
 def _wants_codehelp_code_review(user_msg: str) -> bool:
     m = (user_msg or "").lower()
     triggers = (
@@ -1793,6 +1611,59 @@ def _latest_artifact_path_by_name(project_full: str, name: str) -> str:
         return str(best.get("path") or "").strip()
     return ""
 
+
+def read_bytes_file(path: Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except Exception:
+        return b""
+
+def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8", errors: str = "strict") -> None:
+    # HARD INVARIANT (must run BEFORE any delegation):
+    # server.py must never write under projects/<user>/_user/.
+    rp = str(path).replace("\\", "/")
+    if "/_user/" in rp:
+        raise RuntimeError(
+            "Refusing direct write to global user memory from server.py. "
+            "Use project_store as the single authority."
+        )
+
+    # Prefer canonical writer for all other paths.
+    try:
+        fn = getattr(project_store, "atomic_write_text", None)
+        if callable(fn):
+            fn(path, content, encoding=encoding, errors=errors)
+            return
+    except Exception:
+        pass
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content or "", encoding=encoding, errors=errors)
+    os.replace(tmp, path)
+
+def atomic_write_bytes(path: Path, content: bytes) -> None:
+    # HARD INVARIANT (must run BEFORE any delegation):
+    rp = str(path).replace("\\", "/")
+    if "/_user/" in rp:
+        raise RuntimeError(
+            "Refusing direct write to global user memory from server.py. "
+            "Use project_store as the single authority."
+        )
+
+    # Prefer canonical writer for all other paths.
+    try:
+        fn = getattr(project_store, "atomic_write_bytes", None)
+        if callable(fn):
+            fn(path, content)
+            return
+    except Exception:
+        pass
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(content or b"")
+    os.replace(tmp, path)
 
 def append_jsonl(path: Path, obj: dict) -> None:
     # HARD INVARIANT (must run BEFORE any delegation):
@@ -2745,23 +2616,6 @@ def should_auto_web_search(user_text: str) -> bool:
 
     return False
 
-def _health_sanitize_search_query(q: str) -> str:
-    """
-    Remove personal identifiers and weight/age numerics from health search queries
-    while preserving medical terms and medication names.
-    """
-    s = strip_lens0_system_blocks(q or "").strip()
-    if not s:
-        return ""
-    # Remove explicit age/weight units (keep other numbers like COVID-19)
-    try:
-        s = re.sub(r"\b\d{1,3}\s*(?:lb|lbs|pounds|kg|kilograms)\b", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\b\d{1,3}\s*(?:yo|y/o|years?\s+old)\b", "", s, flags=re.IGNORECASE)
-    except Exception:
-        pass
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
 
 def strip_lens0_system_blocks(text: str) -> str:
 
@@ -2973,80 +2827,6 @@ def resolve_user_frame(*, user: str, current_project_full: str, user_text: str) 
         "user_text_for_search": rewritten,
     }
 
-def _looks_like_health_query(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-    keys = (
-        "health", "symptom", "symptoms", "fever", "cough", "cold", "flu", "covid",
-        "sore throat", "congestion", "runny nose", "stuffy", "headache",
-        "body aches", "nausea", "vomit", "diarrhea", "rash",
-        "medicine", "medicines", "med", "meds", "dosage", "dose", "mg",
-        "ibuprofen", "acetaminophen", "tylenol", "advil", "motrin",
-        "lisinopril", "allergy", "allergies", "blood pressure",
-        "doctor", "diagnosis", "urgent care",
-    )
-    return any(k in t for k in keys)
-
-def _build_health_search_context(*, project_full: str) -> str:
-    """
-    Build a minimal, non-identifying health context suffix for search queries.
-    Intended for user-approved personalization. Do NOT include names or location.
-    """
-    try:
-        prof = project_store.load_health_profile(project_full) or {}
-    except Exception:
-        prof = {}
-    parts: List[str] = []
-    # Age (derived)
-    try:
-        user_seg = str(project_full or "").split("/", 1)[0].strip()
-    except Exception:
-        user_seg = ""
-    try:
-        if user_seg:
-            gp = project_store.load_user_profile(user_seg)
-            age = (gp.get("derived") or {}).get("age_years")
-            if isinstance(age, int):
-                parts.append(f"age {age}")
-    except Exception:
-        pass
-    # Meds (top one)
-    try:
-        meds = prof.get("medications") if isinstance(prof, dict) else []
-        if isinstance(meds, list):
-            for m in meds:
-                if not isinstance(m, dict):
-                    continue
-                name = str(m.get("name") or "").strip()
-                if name:
-                    parts.append(f"med {name}")
-                    break
-    except Exception:
-        pass
-    # Allergies (none vs known)
-    try:
-        allergies = prof.get("allergies") if isinstance(prof, dict) else []
-        if isinstance(allergies, list) and allergies:
-            has_real = False
-            for a in allergies:
-                if not isinstance(a, dict):
-                    continue
-                nm = str(a.get("name") or "").strip().lower()
-                st = str(a.get("status") or "").strip().lower()
-                if not nm:
-                    continue
-                if st in ("none", "no", "none_reported") or "no known" in nm:
-                    continue
-                has_real = True
-                parts.append(f"allergy {nm}")
-                break
-            if not has_real:
-                parts.append("no known medication allergies")
-    except Exception:
-        pass
-    return "; ".join(parts).strip()
-
 def _is_exact_pulse_cmd(text: str) -> bool:
     """
     ws_commands helper: True only when the user message is exactly a pulse/status command.
@@ -3151,7 +2931,10 @@ def _detect_decision_candidate(msg: str) -> Tuple[str, float]:
     # Guard: evaluation/validation requests are NOT project decisions.
     # Example: "I want you to confirm that this idea is valid: ..."
     low = raw.lower()
-    if any(k in low for k in ("confirm", "validate", "tell me if", "am i right", "is this a good idea", "does this make sense")):
+    if (
+        "i want you to" in low
+        and any(k in low for k in ("confirm", "validate", "tell me if", "am i right", "is this a good idea", "does this make sense"))
+    ):
         return "", 0.0
 
 
@@ -3349,49 +3132,6 @@ def _is_generic_search_query(q: str) -> bool:
     # If it has almost no content signal, treat as generic unless it’s long enough to carry meaning
     if (len(toks) <= 1) and (len(s) < 34) and (not has_num_or_unit):
         return True
-
-    return False
-
-def _should_use_llm_continuity(cand: str, active_topic_strength: float) -> bool:
-    """
-    Gate the continuity classifier to reduce model calls without changing outcomes.
-    Auto mode only calls the model for ambiguous/short follow-ups.
-    """
-    mode = (CONTINUITY_MODEL_MODE or "auto").strip().lower()
-    if mode == "always":
-        return True
-    if mode == "off":
-        return False
-
-    t = (cand or "").strip()
-    if not t:
-        return False
-
-    low = t.lower()
-    n = len(t)
-
-    # Very short turns are usually ambiguous
-    if n <= 32:
-        return True
-
-    # Pronoun-heavy short turns benefit from model continuity
-    if n <= 90 and re.search(r"\b(it|that|this|they|them|those|these|he|she|his|her)\b", low):
-        return True
-
-    # Generic queries should lean on LLM for topic continuity
-    if _is_generic_search_query(t):
-        return True
-
-    # Ambiguous connectives
-    if low.startswith(("and ", "also ", "what about", "that one", "the other", "same thing")):
-        return True
-
-    # Weak topic confidence + short query -> ask model
-    try:
-        if float(active_topic_strength) < 0.35 and n <= 120:
-            return True
-    except Exception:
-        pass
 
     return False
 
@@ -4103,6 +3843,74 @@ async def _run_search_with_workspace(
         pass
 
     return best_ev, rel_path
+def load_pdf_text(path: Path) -> str:
+    try:
+        reader = PdfReader(str(path))
+        pages: List[str] = []
+        for page in reader.pages:
+            try:
+                pages.append(page.extract_text() or "")
+            except Exception as e:
+                pages.append(f"[PDF page extract error: {e!r}]")
+        text = "\n".join(pages).strip()
+        if text:
+            return text
+
+        # Best-effort OCR fallback for scanned PDFs (optional deps)
+        if convert_from_path is None or pytesseract is None:
+            return "(PDF error: no extractable text found; scanned PDF OCR not available (install pdf2image + poppler + pytesseract/tesseract).)"
+
+        try:
+            images = convert_from_path(str(path))
+            ocr_parts: List[str] = []
+            for i, im in enumerate(images[:25]):  # safety cap
+                try:
+                    ocr = pytesseract.image_to_string(im) or ""
+                    ocr = ocr.strip()
+                    if ocr:
+                        ocr_parts.append(f"[PAGE {i+1}]\n{ocr}")
+                except Exception as e:
+                    ocr_parts.append(f"[PAGE {i+1} OCR error: {e!r}]")
+            ocr_text = "\n\n".join(ocr_parts).strip()
+            if not ocr_text:
+                return "(PDF error: no extractable text found; OCR ran but produced empty output.)"
+            return ocr_text
+        except Exception as e:
+            return f"(PDF error: no extractable text found; OCR fallback failed: {e!r})"
+    except Exception as e:
+        return f"(PDF error: {e!r})"
+
+# =============================================================================
+# Image OCR + caption helpers (Phase 1)
+# =============================================================================
+
+# IMAGE_SUFFIXES moved to lens0_config.py (imported above)
+
+def _mime_for_image_suffix(suffix: str) -> str:
+    # wrapper to keep call sites stable; implementation lives in lens0_config.py
+    return mime_for_image_suffix(suffix)
+
+def load_image_ocr(path: Path) -> Tuple[str, str]:
+    """
+    Return (ocr_text, note).
+    - Uses pytesseract + Pillow if installed.
+    - If not installed, returns empty text with a note.
+    """
+    if Image is None or pytesseract is None:
+        return "", "OCR not available (install Pillow + pytesseract + Tesseract binary)."
+
+    try:
+        img = Image.open(str(path))
+        # Small normalization: convert to RGB to avoid mode issues
+        if getattr(img, "mode", "") not in ("RGB", "L"):
+            img = img.convert("RGB")
+        text = (pytesseract.image_to_string(img) or "").strip()
+        if not text:
+            return "", "OCR ran but produced no text."
+        return text, "OCR extracted text successfully."
+    except Exception as e:
+        return "", f"OCR error: {e!r}"
+
 def call_openai_vision_caption(image_bytes: bytes, mime: str, *, prompt: str) -> Tuple[str, str]:
     """
     Return (caption, note).
@@ -4857,17 +4665,6 @@ def call_openai_chat(messages: List[Dict[str, str]]) -> str:
                 kwargs["base_url"] = os.environ["OPENAI_BASE_URL"].strip()
             _OPENAI_CLIENT = OpenAI(**kwargs)  # type: ignore
         resp = _OPENAI_CLIENT.chat.completions.create(model=OPENAI_MODEL, messages=messages)
-        try:
-            usage_obj = getattr(resp, "usage", None)
-            if usage_obj:
-                usage = {
-                    "prompt_tokens": int(getattr(usage_obj, "prompt_tokens", 0) or 0),
-                    "completion_tokens": int(getattr(usage_obj, "completion_tokens", 0) or 0),
-                    "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
-                }
-                _usage_ctx_add(model=str(getattr(resp, "model", "") or OPENAI_MODEL), usage=usage)
-        except Exception:
-            pass
         return resp.choices[0].message.content or ""
 
     # HTTP fallback (works with OpenAI-compatible servers)
@@ -4880,17 +4677,6 @@ def call_openai_chat(messages: List[Dict[str, str]]) -> str:
     r = requests.post(url, headers=headers, json=payload, timeout=90)
     r.raise_for_status()
     data = r.json()
-    try:
-        usage = data.get("usage") if isinstance(data, dict) else None
-        if isinstance(usage, dict):
-            usage_norm = {
-                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                "completion_tokens": int(usage.get("completion_tokens") or 0),
-                "total_tokens": int(usage.get("total_tokens") or 0),
-            }
-            _usage_ctx_add(model=str(data.get("model") or OPENAI_MODEL), usage=usage_norm)
-    except Exception:
-        pass
     try:
         return (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
     except Exception:
@@ -5560,7 +5346,7 @@ def _extract_user_rules_from_message(user_msg: str) -> List[str]:
     low = raw.lower()
 
     # Fast gate: avoid parsing every message.
-    if not any(k in low for k in ("never", "don't", "do not", "only", "always")):
+    if not any(k in low for k in ("i want you to", "never", "don't", "do not", "only", "always")):
         return []
 
     # Split into candidate lines/sentences.
@@ -5586,11 +5372,21 @@ def _extract_user_rules_from_message(user_msg: str) -> List[str]:
 
         # Must look like an explicit rule about assistant behavior.
         if not any(c_low.startswith(pfx) for pfx in ("never", "don't", "do not", "only", "always", "please don't")):
-            continue
+            if "i want you to" not in c_low:
+                continue
 
         # Avoid capturing generic content rules unrelated to assistant behavior.
         if not any(w in c_low for w in ("you", "suggest", "say", "ask", "respond", "reply", "give me", "don't suggest", "never suggest")):
             continue
+
+        # Normalize common "I want you to ..." prefix.
+        if "i want you to" in c_low:
+            # Keep original casing but trim the prefix in a simple, deterministic way.
+            i = c_low.find("i want you to")
+            if i >= 0:
+                c0 = c0[i + len("i want you to"):].strip()
+                # Remove leading punctuation.
+                c0 = c0.lstrip(":").strip()
 
         # Hard caps to keep state small and stable.
         c0 = c0.strip()
@@ -6137,19 +5933,17 @@ async def build_contextual_greeting(
     expert_id = ""
     if reason_l.startswith("expert_switch:"):
         expert_id = reason_l.split(":", 1)[1].strip()
-    if expert_id == "writing":
-        expert_id = "health"
     expert_label_map = {
         "default": "Default",
         "coding": "Coding",
-        "health": "Health",
+        "writing": "Writing",
         "therapist": "Therapist",
         "analysis": "Analysis",
     }
     expert_tone_map = {
         "default": "classic Trebek (calm, poised, lightly wry)",
         "coding": "technical and pragmatic",
-        "health": "direct, science-first, clinical",
+        "writing": "editorial and crisp",
         "therapist": "calm, steady, clinical warmth",
         "analysis": "precise, analytical, no fluff",
     }
@@ -6577,8 +6371,7 @@ def build_project_context_for_model(project_name: str, user_text: str, *, max_ch
 
                 plan_txt = _artifact_text_for("plan_ocr", 220000)
                 ocr_txt = _artifact_text_for("ocr_text", 220000)
-                doc_txt = _artifact_text_for("doc_text", 220000)
-                picked = (doc_txt or plan_txt or ocr_txt).strip()
+                picked = (plan_txt or ocr_txt).strip()
 
                 if picked:
                     block: List[str] = []
@@ -8857,6 +8650,7 @@ def _is_file_referential_query(user_msg: str) -> bool:
     - Do NOT trigger on abstract commentary like:
         "models often fail to read the file carefully"
       even though it contains "the file" + "read".
+    - Require assistant-addressed intent (can you / please / show me / tell me / open / look at).
     - Do NOT trigger if an explicit filename is present.
     """
     msg = (user_msg or "").strip()
@@ -8888,6 +8682,29 @@ def _is_file_referential_query(user_msg: str) -> bool:
         has_deictic = False
 
     if not has_deictic:
+        return False
+
+    # Must look like the user is asking the assistant to do something with it.
+    # This blocks abstract statements that mention "read the file" generically.
+    assistant_addressed = (
+        ("can you" in low)
+        or ("could you" in low)
+        or ("would you" in low)
+        or ("please" in low)
+        or low.startswith((
+            "open",
+            "look at",
+            "use",
+            "show me",
+            "tell me",
+            "describe",
+            "summarize",
+            "review",
+            "analyze",
+            "read",
+        ))
+    )
+    if not assistant_addressed:
         return False
 
     # Action intent required (still conservative)
@@ -9637,8 +9454,6 @@ def _tier2g_promote_global_memory_or_raise(user: str, user_msg: str) -> Dict[str
 
 async def handle_connection(websocket, path=None):  # path optional for websockets compatibility
     print("[WS] Client connected")
-    conn_id = f"c_{uuid.uuid4().hex[:10]}"
-    auth_source = "cookie"
 
     # Very simple cookie parse (no security claims; just isolation)
     cookie_header = ""
@@ -9688,7 +9503,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
             if q_user and q_pass and USERS.get(q_user) == q_pass:
                 user = q_user
-                auth_source = "query"
                 print(f"[WS] Auth via querystring: user={user!r}")
             else:
                 # Debug line so you can see what the server *actually* received
@@ -9718,7 +9532,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             if p.exists():
                 obj = json.loads(p.read_text(encoding="utf-8") or "{}")
                 val = str(obj.get("project") or "").strip()
-                return path_engine.safe_project_name(val, default_project_name=DEFAULT_PROJECT_NAME) if val else ""
+                return safe_project_name(val) if val else ""
         except Exception:
             pass
         return ""
@@ -9726,7 +9540,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
     def _save_last_project(u: str, proj_short: str) -> None:
         try:
             p = _user_last_project_path(u)
-            obj = {"project": path_engine.safe_project_name(proj_short, default_project_name=DEFAULT_PROJECT_NAME), "updated_at": now_iso()}
+            obj = {"project": safe_project_name(proj_short), "updated_at": now_iso()}
             project_store.atomic_write_text(p, json.dumps(obj, indent=2, sort_keys=True))
         except Exception:
             pass
@@ -9745,13 +9559,8 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         if lp:
             current_project = lp
 
-    current_project_full = path_engine.safe_project_name(f"{user}/{current_project}", default_project_name=DEFAULT_PROJECT_NAME)
+    current_project_full = safe_project_name(f"{user}/{current_project}")
     ensure_project_scaffold(current_project_full)
-    try:
-        _TRACE.new_trace("ws.connect", conn_id, current_project)
-        _TRACE.new_trace("auth.login", conn_id, current_project, detail={"source": auth_source})
-    except Exception:
-        pass
 
     # Deterministic couples bootstrap (no model call, no user setup)
     # Couples accounts must always have user-scoped global memory scaffolded on disk.
@@ -9826,10 +9635,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
     _ws_add_client(current_project_full, websocket)
 
     def _full(short_name: str) -> str:
-        return path_engine.safe_project_name(
-            f"{user}/{path_engine.safe_project_name(short_name, default_project_name=DEFAULT_PROJECT_NAME)}",
-            default_project_name=DEFAULT_PROJECT_NAME,
-        )
+        return safe_project_name(f"{user}/{safe_project_name(short_name)}")
 
     def _get_project_goal(full_name: str) -> str:
         try:
@@ -9853,404 +9659,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         # UI needs a single-line meta message to update the chat pill.
         # Do NOT narrate switching in chat.
         return f"{prefix} {short_name}"
-
-    def _load_upload_batches(project_full: str) -> Dict[str, Any]:
-        try:
-            p = project_store.upload_batches_state_path(project_full)
-            if not p.exists():
-                return {"batches": {}}
-            obj = json.loads(p.read_text(encoding="utf-8") or "{}")
-            if not isinstance(obj, dict):
-                return {"batches": {}}
-            if not isinstance(obj.get("batches"), dict):
-                obj["batches"] = {}
-            return obj
-        except Exception:
-            return {"batches": {}}
-
-    def _history_state_for_project(project_full: str, msgs: Optional[List[Dict[str, Any]]] = None) -> str:
-        try:
-            if isinstance(msgs, list):
-                return "empty" if len(msgs) == 0 else "non_empty"
-            m = read_chat_log_messages_for_ui(project_full, max_messages=1)
-            return "empty" if not m else "non_empty"
-        except Exception:
-            return "unknown"
-
-    def _greeting_should_emit(*, conn: str, project_full: str, history_state: str, reason: str, is_expert_switch: bool) -> Tuple[bool, str]:
-        try:
-            hs = str(history_state or "").strip() or "unknown"
-            if hs == "non_empty" and not is_expert_switch:
-                return False, "history_non_empty"
-            key = f"{conn}|{project_full}|{hs}"
-            now_ts = time.monotonic()
-            last_ts = float(_greet_dedupe.get(key) or 0.0)
-            if last_ts and (now_ts - last_ts) < float(_greet_dedupe_window_s):
-                return False, "dedupe"
-            _greet_dedupe[key] = now_ts
-            return True, ""
-        except Exception:
-            return True, ""
-
-    def _extract_zip_name_from_text(s: str) -> str:
-        try:
-            hits = re.findall(r"[A-Za-z0-9_\-\.]+\.zip", s or "")
-            if hits:
-                return hits[-1]
-        except Exception:
-            pass
-        return ""
-
-    def _resolve_batch_for_analysis(user_msg: str) -> Tuple[str, Dict[str, Any]]:
-        """
-        Return (batch_id, batch_obj) for a requested ZIP.
-        Prefer explicit zip in message, then active_object zip, then most recent active batch.
-        """
-        batches_state = _load_upload_batches(current_project_full)
-        batches = batches_state.get("batches") if isinstance(batches_state.get("batches"), dict) else {}
-        if not isinstance(batches, dict) or not batches:
-            return "", {}
-
-        zip_name = _extract_zip_name_from_text(user_msg or "")
-        if not zip_name:
-            try:
-                ao = project_store.load_active_object(current_project_full) or {}
-                rel = str(ao.get("rel_path") or "").replace("\\", "/").strip()
-                if rel.lower().endswith(".zip"):
-                    zip_name = Path(rel).name
-            except Exception:
-                zip_name = ""
-
-        if zip_name:
-            z = Path(zip_name).name
-            for bid, b in batches.items():
-                if not isinstance(b, dict):
-                    continue
-                bn = str(b.get("zip_name") or "").strip()
-                if bn and Path(bn).name == z:
-                    return str(bid), b
-
-        # Fallback: most recent active batch, else most recent by created_at
-        active = [b for b in batches.values() if isinstance(b, dict) and str(b.get("status") or "") == "active"]
-        if active:
-            active_sorted = sorted(active, key=lambda x: str(x.get("created_at") or ""), reverse=True)
-            b0 = active_sorted[0]
-            return str(b0.get("id") or ""), b0
-
-        # Final fallback: any batch
-        any_sorted = sorted(
-            [b for b in batches.values() if isinstance(b, dict)],
-            key=lambda x: str(x.get("created_at") or ""),
-            reverse=True,
-        )
-        if any_sorted:
-            b0 = any_sorted[0]
-            return str(b0.get("id") or ""), b0
-
-        return "", {}
-
-    def _looks_like_batch_analysis_command(msg: str) -> bool:
-        t = (msg or "").strip().lower()
-        if not t:
-            return False
-        # Must include an analysis intent
-        if not any(x in t for x in ("analy", "review", "process", "summar")):
-            return False
-        # Must indicate batch/zip/upload set
-        if not any(x in t for x in ("batch", "zip", "uploaded set", "uploaded batch", "all bates")):
-            return False
-        return True
-
-    async def _run_manual_batch_analysis(*, batch_id: str, batch: Dict[str, Any]) -> None:
-        nonlocal analysis_backfill_pending
-        if not batch_id or not isinstance(batch, dict):
-            return
-        if batch_id in _upload_batch_inflight:
-            return
-        _upload_batch_inflight.add(batch_id)
-
-        zip_name = str(batch.get("zip_name") or "").strip()
-        files = batch.get("files") if isinstance(batch.get("files"), list) else []
-        files = [str(x).replace("\\", "/").strip() for x in files if str(x).strip()]
-        total = len(files)
-        done_count = 0
-
-        # Build rel->orig_name map from manifest for better labels
-        rel_to_orig: Dict[str, str] = {}
-        try:
-            m = load_manifest(current_project_full) or {}
-            raw_files = m.get("raw_files") if isinstance(m.get("raw_files"), list) else []
-            for rf in raw_files:
-                if not isinstance(rf, dict):
-                    continue
-                relp = str(rf.get("path") or "").replace("\\", "/").strip()
-                if not relp:
-                    continue
-                rel_to_orig[relp] = str(rf.get("orig_name") or Path(relp).name or "").strip()
-        except Exception:
-            pass
-
-        analysis_backfill_pending = True
-        try:
-            await websocket.send(f"Starting batch analysis for {zip_name or 'uploaded ZIP'} ({total} files).")
-        except Exception:
-            pass
-
-        # Progress bar start
-        try:
-            frame = _ws_frame(
-                1,
-                "upload.batch.progress",
-                project=current_project,
-                batch_id=batch_id,
-                zip_name=zip_name,
-                done=0,
-                total=total,
-                state="start",
-            )
-            await _ws_send_safe(frame)
-        except Exception:
-            pass
-
-        async def _progress_tick() -> None:
-            try:
-                if done_count == total or (done_count % 5 == 0):
-                    frame = _ws_frame(
-                        1,
-                        "upload.batch.progress",
-                        project=current_project,
-                        batch_id=batch_id,
-                        zip_name=zip_name,
-                        done=done_count,
-                        total=total,
-                        state="progress",
-                    )
-                    await _ws_send_safe(frame)
-            except Exception:
-                pass
-
-        try:
-            for rel in files:
-                if not rel:
-                    continue
-                done_count += 1
-                key = _analysis_backfill_key(rel)
-                if key and _upload_synthesis_already_done(current_project_full, key):
-                    try:
-                        project_store.mark_upload_batch_file_done(
-                            current_project_full, batch_id=batch_id, canonical_rel=rel
-                        )
-                    except Exception:
-                        pass
-                    await _progress_tick()
-                    continue
-                suf = Path(rel).suffix.lower()
-                is_image = suf in IMAGE_SUFFIXES
-                image_mode = "require_semantics"
-
-                if is_image:
-                    try:
-                        ok_txt, _src_txt, _txt_len = _upload_text_signal(current_project_full, rel)
-                    except Exception:
-                        ok_txt = False
-
-                    if ok_txt:
-                        image_mode = "ocr_only"
-                    else:
-                        ok_v, _sem_json, note_v = await ensure_image_semantics_for_file(
-                            current_project_full,
-                            file_rel=rel,
-                            force=False,
-                            reason="manual_batch",
-                        )
-                        if not ok_v:
-                            _analysis_record_gap(
-                                rel=rel,
-                                orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                                task_summary="Extract non-text content from image upload",
-                                limitations=["Vision semantics unavailable for this image."],
-                                missing_capabilities=["OPENAI_VISION_MODEL + OPENAI_API_KEY"],
-                                needed_inputs=["Enable vision and re-run analysis."],
-                                suggested_features=["OCR-first image handling with optional vision escalation"],
-                                recommended_search_queries=["OPENAI_VISION_MODEL vision enabled"],
-                            )
-                            try:
-                                _upload_synthesis_mark_done(
-                                    current_project_full,
-                                    key=key,
-                                    canonical_rel=rel,
-                                    orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                                )
-                            except Exception:
-                                pass
-                            try:
-                                project_store.mark_upload_batch_file_done(
-                                    current_project_full, batch_id=batch_id, canonical_rel=rel
-                                )
-                            except Exception:
-                                pass
-                            await _progress_tick()
-                            continue
-
-                else:
-                    try:
-                        ok_txt, src_txt, txt_len = _upload_text_signal(current_project_full, rel)
-                    except Exception:
-                        ok_txt, src_txt, txt_len = False, "", 0
-
-                    if not ok_txt:
-                        if suf == ".pdf":
-                            await _analysis_try_pdf_ocr(rel=rel, orig_name=(rel_to_orig.get(rel) or Path(rel).name))
-                        elif suf in (".doc", ".docx"):
-                            await _analysis_try_doc_reingest(rel=rel)
-
-                        try:
-                            ok_txt, src_txt, txt_len = _upload_text_signal(current_project_full, rel)
-                        except Exception:
-                            ok_txt, src_txt, txt_len = False, "", 0
-
-                    if not ok_txt:
-                        if suf == ".pdf":
-                            _analysis_record_gap(
-                                rel=rel,
-                                orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                                task_summary="Extract text from PDF upload",
-                                limitations=["No readable text found after OCR attempt."],
-                                missing_capabilities=["Higher-fidelity PDF text/OCR"],
-                                needed_inputs=["Provide a text-based PDF or clearer scan."],
-                                suggested_features=["Allow user-supplied OCR text paste"],
-                                recommended_search_queries=["improve OCR scanned PDF"],
-                            )
-                        elif suf in (".doc", ".docx"):
-                            _analysis_record_gap(
-                                rel=rel,
-                                orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                                task_summary="Extract text from Word document",
-                                limitations=["No readable text extracted from the document."],
-                                missing_capabilities=["LibreOffice conversion or robust DOC parser"],
-                                needed_inputs=["Re-export as DOCX or PDF."],
-                                suggested_features=["Auto-convert legacy .doc using LibreOffice"],
-                                recommended_search_queries=["LibreOffice headless doc to docx"],
-                            )
-                        else:
-                            _analysis_record_gap(
-                                rel=rel,
-                                orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                                task_summary="Extract text from uploaded file",
-                                limitations=[f"No extractor for file type '{suf or 'unknown'}'."],
-                                missing_capabilities=["File-type specific extractor"],
-                                needed_inputs=["Upload a text-readable format."],
-                                suggested_features=["Add extractor for this file type"],
-                                recommended_search_queries=[],
-                            )
-                        try:
-                            _upload_synthesis_mark_done(
-                                current_project_full,
-                                key=key,
-                                canonical_rel=rel,
-                                orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            project_store.mark_upload_batch_file_done(
-                                current_project_full, batch_id=batch_id, canonical_rel=rel
-                            )
-                        except Exception:
-                            pass
-                        await _progress_tick()
-                        continue
-
-                    # Optional: allow OCR-only fast path if explicitly enabled
-                    allow_ocr_only = bool(os.environ.get("ANALYSIS_OCR_ONLY_FASTPATH") or "")
-                    if allow_ocr_only:
-                        try:
-                            _record_ocr_only_index(
-                                rel=rel,
-                                orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                                source=src_txt,
-                                text_len=txt_len,
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            _upload_synthesis_mark_done(
-                                current_project_full,
-                                key=key,
-                                canonical_rel=rel,
-                                orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            project_store.mark_upload_batch_file_done(
-                                current_project_full, batch_id=batch_id, canonical_rel=rel
-                            )
-                        except Exception:
-                            pass
-                        await _progress_tick()
-                        continue
-                try:
-                    await _run_upload_expert_synthesis(
-                        orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                        canonical_rel=rel,
-                        suppress_chat=True,
-                        suppress_history=True,
-                        image_mode=image_mode,
-                    )
-                    try:
-                        _upload_synthesis_mark_done(
-                            current_project_full,
-                            key=key,
-                            canonical_rel=rel,
-                            orig_name=(rel_to_orig.get(rel) or Path(rel).name),
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        project_store.mark_upload_batch_file_done(
-                            current_project_full, batch_id=batch_id, canonical_rel=rel
-                        )
-                    except Exception:
-                        pass
-                except Exception:
-                    continue
-
-                await _progress_tick()
-
-            # Batch summary (once)
-            try:
-                project_store.mark_upload_batch_summary_done(current_project_full, batch_id=batch_id)
-            except Exception:
-                pass
-            # Keep progress visible while summary is generated
-            try:
-                frame = _ws_frame(
-                    1,
-                    "upload.batch.progress",
-                    project=current_project,
-                    batch_id=batch_id,
-                    zip_name=zip_name,
-                    done=total,
-                    total=total,
-                    state="finalizing",
-                )
-                await _ws_send_safe(frame)
-            except Exception:
-                pass
-            try:
-                await _run_upload_batch_summary(
-                    batch_id=batch_id,
-                    zip_name=zip_name,
-                    total=total,
-                )
-            except Exception:
-                pass
-        finally:
-            try:
-                _upload_batch_inflight.discard(batch_id)
-            except Exception:
-                pass
     
     # UI-selected expert (sticky per connection; updated by WS frames)
     active_expert = "default"
@@ -10287,8 +9695,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
     last_full_answer_text = ""
     last_patch_text = ""
     last_patch_target = ""
-    # Suppress user-facing bootstrap prompts; goal inference remains internal.
-    suppress_bootstrap_prompts = True
     # C5.3 helper: remember last resolved referential file so “the other one” can work.
     last_referential_file_rel = ""
     # Greeting de-duplication (FOUNDATIONAL):
@@ -10296,13 +9702,9 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
     greeted_projects: set[str] = set()
     # Allow expert-switch greetings without colliding with project-entry greet.
     greeted_expert_switch: set[str] = set()
-    # Short-window greeting idempotency guard: (conn_id, project, history_state) -> last_ts
-    _greet_dedupe: Dict[str, float] = {}
-    _greet_dedupe_window_s = 8.0
     # Analysis backfill (automatic, debounced)
     last_backfill_ts = 0.0
     backfill_inflight = False
-    analysis_backfill_pending = False
     # -----------------------------------------------------------------
     # C4.2 — Upload → Expert Synthesis (non-spam; one per uploaded file)
     #
@@ -10318,8 +9720,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
     _UPLOAD_SYNTHESIS_LOG = "upload_synthesis.jsonl"
     _upload_synthesis_inflight: set[str] = set()
-    _upload_synthesis_rerun_guard: set[str] = set()
-    _upload_batch_inflight: set[str] = set()
 
     def _upload_synthesis_log_path(project_full: str) -> Path:
         return state_dir(project_full) / _UPLOAD_SYNTHESIS_LOG
@@ -10347,345 +9747,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             if str(obj.get("key") or "").strip() == k:
                 return True
         return False
-
-    def _analysis_missing_discovery_index(project_full: str, rel: str, orig_name: str) -> bool:
-        try:
-            entries = project_store.load_discovery_index(project_full, limit=2000) or []
-        except Exception:
-            entries = []
-        if not entries:
-            return True
-        rel0 = (rel or "").replace("\\", "/").strip()
-        base0 = Path(rel0).name if rel0 else ""
-        orig0 = (orig_name or "").strip()
-        for e in entries:
-            if not isinstance(e, dict):
-                continue
-            up = str(e.get("upload_path") or e.get("source_file") or "").replace("\\", "/").strip()
-            on = str(e.get("orig_name") or "").strip()
-            if rel0 and up == rel0:
-                return False
-            if base0 and (up.endswith("/" + base0) or up == base0):
-                return False
-            if orig0 and (on == orig0):
-                return False
-        return True
-
-    def _effective_analysis_hat() -> bool:
-        try:
-            if str(active_expert or "").strip().lower() == "analysis":
-                return True
-        except Exception:
-            pass
-        try:
-            stx = project_store.load_project_state(current_project_full) or {}
-            last_ex = str(stx.get("last_active_expert") or "").strip().lower()
-            if last_ex == "analysis":
-                return True
-        except Exception:
-            pass
-        return False
-
-    def _effective_health_hat() -> bool:
-        try:
-            ae = str(active_expert or "").strip().lower()
-            if ae == "writing":
-                ae = "health"
-            if ae == "health":
-                return True
-        except Exception:
-            pass
-        try:
-            stx = project_store.load_project_state(current_project_full) or {}
-            last_ex = str(stx.get("last_active_expert") or "").strip().lower()
-            if last_ex == "writing":
-                last_ex = "health"
-            if last_ex == "health":
-                return True
-        except Exception:
-            pass
-        return False
-
-    def _upload_ocr_min_chars() -> int:
-        try:
-            v = int(os.environ.get("UPLOAD_OCR_MIN_CHARS", "1200") or 1200)
-        except Exception:
-            v = 1200
-        return max(200, v)
-
-    def _upload_text_signal(project_full: str, rel: str) -> tuple[bool, str, int]:
-        rel0 = (rel or "").replace("\\", "/").strip()
-        if not rel0:
-            return False, "", 0
-        suf = Path(rel0).suffix.lower()
-        min_chars = _upload_ocr_min_chars()
-
-        def _ok(txt: str) -> bool:
-            return len((txt or "").strip()) >= min_chars
-
-        # Detect legacy/low-signal Word extracts
-        legacy_doc = False
-        try:
-            ov_txt = _find_latest_artifact_text_for_file(
-                project_full, artifact_type="file_overview", file_rel=rel0, cap=4000
-            )
-            ov_low = (ov_txt or "").lower()
-            if "doc_legacy_strings" in ov_low or "doc_low_signal" in ov_low or "soffice_not_available" in ov_low:
-                legacy_doc = True
-        except Exception:
-            legacy_doc = False
-
-        if suf in (".doc", ".docx") and legacy_doc:
-            return False, "", 0
-
-        # PDF: prefer plan_ocr (scanned) then pdf_text
-        if suf == ".pdf":
-            try:
-                plan = _find_latest_artifact_text_for_file(
-                    project_full, artifact_type="plan_ocr", file_rel=rel0, cap=220000
-                )
-            except Exception:
-                plan = ""
-            if _ok(plan):
-                return True, "plan_ocr", len(plan.strip())
-            try:
-                pdf = _find_latest_artifact_text_for_file(
-                    project_full, artifact_type="pdf_text", file_rel=rel0, cap=220000
-                )
-            except Exception:
-                pdf = ""
-            if _ok(pdf):
-                return True, "pdf_text", len(pdf.strip())
-            return False, "", 0
-
-        # Word docs
-        if suf in (".doc", ".docx"):
-            try:
-                doc = _find_latest_artifact_text_for_file(
-                    project_full, artifact_type="doc_text", file_rel=rel0, cap=220000
-                )
-            except Exception:
-                doc = ""
-            if _ok(doc):
-                return True, "doc_text", len(doc.strip())
-            return False, "", 0
-
-        # Images: OCR text only (still requires vision semantics elsewhere if needed)
-        if suf in IMAGE_SUFFIXES:
-            try:
-                ocr = _find_latest_artifact_text_for_file(
-                    project_full, artifact_type="ocr_text", file_rel=rel0, cap=220000
-                )
-            except Exception:
-                ocr = ""
-            if _ok(ocr):
-                return True, "ocr_text", len(ocr.strip())
-            return False, "", 0
-
-        # Other: fallbacks
-        for at in ("doc_text", "pdf_text", "ocr_text"):
-            try:
-                txt = _find_latest_artifact_text_for_file(project_full, artifact_type=at, file_rel=rel0, cap=220000)
-            except Exception:
-                txt = ""
-            if _ok(txt):
-                return True, at, len(txt.strip())
-
-        return False, "", 0
-
-    def _record_ocr_only_index(*, rel: str, orig_name: str, source: str, text_len: int) -> None:
-        rel0 = (rel or "").replace("\\", "/").strip()
-        if not rel0:
-            return
-        base = (orig_name or Path(rel0).name or "").strip() or Path(rel0).name
-        suf = Path(rel0).suffix.lower()
-        if suf == ".pdf":
-            doc_type = "PDF"
-        elif suf in (".doc", ".docx"):
-            doc_type = "Word document"
-        elif suf in IMAGE_SUFFIXES:
-            doc_type = "Image"
-        elif suf in (".xls", ".xlsx", ".xlsm"):
-            doc_type = "Spreadsheet"
-        else:
-            doc_type = (suf[1:].upper() + " file") if suf else "Document"
-
-        summary = (
-            f"Text extracted via {source} ({text_len} chars). "
-            "No deep model analysis was run for this file yet."
-        )
-
-        entry = {
-            "doc_type": doc_type,
-            "title": base,
-            "summary": summary,
-            "parties": [],
-            "dates": [],
-            "amounts": [],
-            "issues": [],
-            "questions": [],
-            "tags": ["ocr_only"],
-            "confidence": "low",
-            "upload_path": rel0,
-            "orig_name": base,
-        }
-        try:
-            project_store.append_discovery_index_entry(current_project_full, entry)
-        except Exception:
-            pass
-        try:
-            project_store.build_discovery_views_and_write(current_project_full)
-        except Exception:
-            pass
-        try:
-            project_store.build_library_index_and_write(current_project_full)
-        except Exception:
-            pass
-        try:
-            project_store.build_analysis_audit_report(current_project_full)
-        except Exception:
-            pass
-
-    def _load_discovery_entries_for_batch(project_full: str, zip_name: str) -> List[Dict[str, Any]]:
-        try:
-            entries = project_store.load_discovery_index(project_full, limit=5000) or []
-        except Exception:
-            entries = []
-        if not entries:
-            return []
-        zbase = (Path(zip_name).name if zip_name else "").strip()
-        zstem = (Path(zip_name).stem if zip_name else "").strip()
-        if not zbase and not zstem:
-            return entries
-        filtered: List[Dict[str, Any]] = []
-        for e in entries:
-            if not isinstance(e, dict):
-                continue
-            up = str(e.get("upload_path") or e.get("source_file") or "").replace("\\", "/").strip()
-            on = str(e.get("orig_name") or "").strip()
-            if (zbase and (zbase in up or zbase in on)) or (zstem and (zstem in up or zstem in on)):
-                filtered.append(e)
-        return filtered if filtered else entries
-
-    def _format_batch_summary_deterministic(
-        *,
-        batch_id: str,
-        zip_name: str,
-        total: int,
-    ) -> str:
-        entries = _load_discovery_entries_for_batch(current_project_full, zip_name)
-        if not entries:
-            return (
-                f"Batch {batch_id} ({zip_name}) ingestion is complete.\n"
-                "I do not have an indexed discovery list yet, so I will not summarize or infer anything.\n"
-                "Next step: finish indexing and then generate the discovery index, fact ledger, and timeline.\n"
-                "One question: do you want me to scope the timeline to a specific date range?"
-            ).strip()
-
-        # Aggregate deterministic metrics
-        doc_counts: Dict[str, int] = {}
-        unclassified = 0
-        slip_count = 0
-        date_set: set[str] = set()
-        parties_set: List[str] = []
-        amounts_count = 0
-        issues_count = 0
-
-        def _is_slip(text: str) -> bool:
-            t = (text or "").lower()
-            if "slip" in t:
-                return True
-            if "bates" in t and "label" in t:
-                return True
-            if "separator" in t:
-                return True
-            return False
-
-        for e in entries:
-            if not isinstance(e, dict):
-                continue
-            dt = str(e.get("doc_type") or "").strip()
-            dt_key = dt if dt else "Unclassified"
-            doc_counts[dt_key] = doc_counts.get(dt_key, 0) + 1
-            if not dt:
-                unclassified += 1
-
-            title = str(e.get("title") or "").strip()
-            summary = str(e.get("summary") or "").strip()
-            tags = " ".join([str(x) for x in (e.get("tags") or []) if x is not None])
-            if _is_slip(" ".join([dt, title, summary, tags])):
-                slip_count += 1
-
-            dates = e.get("dates")
-            if isinstance(dates, list):
-                for d in dates:
-                    ds = str(d).strip()
-                    if re.match(r"^\d{4}-\d{2}-\d{2}$", ds):
-                        date_set.add(ds)
-
-            parts = e.get("parties")
-            if isinstance(parts, list):
-                for p in parts:
-                    ps = str(p).strip()
-                    if ps and ps not in parties_set:
-                        parties_set.append(ps)
-
-            amts = e.get("amounts")
-            if isinstance(amts, list) and any(str(a).strip() for a in amts):
-                amounts_count += 1
-
-            issues = e.get("issues")
-            if isinstance(issues, list):
-                issues_count += len([x for x in issues if str(x).strip()])
-
-        # Sort doc types by count desc
-        doc_sorted = sorted(doc_counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
-
-        # Date range
-        min_date = min(date_set) if date_set else ""
-        max_date = max(date_set) if date_set else ""
-
-        # Build artifact links (state docs)
-        def _state_link(fname: str) -> str:
-            rel = f"projects/{current_project_full}/state/{fname}".replace("\\", "/")
-            return f"/file?path={rel}"
-
-        lines: List[str] = []
-        lines.append(f"Batch {batch_id} ({zip_name}) ingestion complete.")
-        lines.append(f"Indexed entries: {len(entries)} of {int(total or 0)} files.")
-        if unclassified:
-            lines.append(f"Unclassified: {unclassified}. I will classify these next.")
-
-        if doc_sorted:
-            lines.append("Document types (from index):")
-            for k, v in doc_sorted[:8]:
-                lines.append(f"- {k}: {v}")
-
-        if slip_count:
-            lines.append(f"Slip sheets / Bates labels: {slip_count} (excluded from timeline and ledger).")
-
-        if min_date and max_date:
-            lines.append(f"Date range captured: {min_date} to {max_date}.")
-        else:
-            lines.append("Date range captured: none yet.")
-
-        if parties_set:
-            lines.append("Parties/entities captured: " + ", ".join(parties_set[:8]) + ".")
-
-        lines.append("Artifacts ready:")
-        lines.append(f"Open: {_state_link('discovery_index.md')}")
-        lines.append(f"Open: {_state_link('fact_ledger.md')}")
-        lines.append(f"Open: {_state_link('timeline.md')}")
-        lines.append(f"Open: {_state_link('issues_questions.md')}")
-        lines.append(f"Open: {_state_link('conflicts.md')}")
-        lines.append(f"Open: {_state_link('library_index.md')}")
-        lines.append(f"Open: {_state_link('evidence_matrix.csv')}")
-
-        lines.append("Next step: I will expand classifications and tighten the timeline using the indexed dates.")
-        lines.append("One question: what date range should I treat as in-scope for the timeline?")
-
-        return "\n".join(lines).strip()
-
 
     def _upload_synthesis_mark_done(project_full: str, *, key: str, canonical_rel: str, orig_name: str) -> None:
         k = (key or "").strip()
@@ -10824,132 +9885,32 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         canonical_rel: str,
         suppress_chat: bool = False,
         suppress_history: bool = False,
-        image_mode: str = "require_semantics",
     ) -> None:
         """
         Run ONE expert follow-up turn via the same pipeline as normal chat,
         then send its answer as an assistant message.
         """
-        nonlocal analysis_backfill_pending
         # Build a synthetic user instruction; include canonical_rel for grounding.
         base = (orig_name or Path(canonical_rel).name or "a file").strip() or "a file"
         rel = (canonical_rel or "").replace("\\", "/").strip()
 
         is_analysis_hat = str(active_expert or "").strip().lower() == "analysis"
-        try:
-            is_image = bool(rel and Path(rel).suffix.lower() in IMAGE_SUFFIXES)
-        except Exception:
-            is_image = False
-        img_mode = str(image_mode or "").strip().lower()
-        img_guard = ""
-        if is_image:
-            if img_mode == "ocr_only":
-                img_guard = (
-                    "Image handling:\n"
-                    "- This image is being treated as TEXT-ONLY.\n"
-                    "- Use OCR text only. Do NOT describe non-text visual content.\n"
-                    "- If OCR text is insufficient, say so and keep JSON fields empty or low confidence.\n\n"
-                )
-            else:
-                img_guard = (
-                    "Hard requirement for images:\n"
-                    "- You MUST use the stored image_semantics artifact (type=image_semantics, linked via from_files) as PRIMARY evidence.\n"
-                    "- Do NOT rely on image_caption or OCR alone for what the image shows.\n\n"
-                )
-        analysis_backfill_pending = True
         doc_partial_note = ""
-        doc_excerpt = ""
-        # Prevent bootstrap/project-mode prompts from hijacking upload synthesis.
-        # If no goal exists, set a minimal default; otherwise just mark bootstrap active.
-        try:
-            st_boot = project_store.load_project_state(current_project_full) or {}
-            goal_boot = str(st_boot.get("goal") or "").strip()
-            bs = str(st_boot.get("bootstrap_status") or "").strip()
-            patch_fields = {}
-            if not goal_boot:
-                patch_fields["goal"] = "Analyze uploaded materials for this chat."
-            if bs != "active":
-                patch_fields["bootstrap_status"] = "active"
-            if patch_fields:
-                project_store.write_project_state_fields(current_project_full, patch_fields)
-        except Exception:
-            pass
         try:
             if rel and Path(rel).suffix.lower() == ".doc":
-                # If LibreOffice is available and this .doc looks like a legacy/low-fidelity extract,
-                # re-ingest once to upgrade to a full docx-based extraction.
-                try:
-                    ov_txt = _find_latest_artifact_text_for_file(
-                        current_project_full,
-                        artifact_type="file_overview",
-                        file_rel=rel,
-                        cap=4000,
-                    )
-                except Exception:
-                    ov_txt = ""
-                ov_low = (ov_txt or "").lower()
-                legacy_note = ("doc_legacy_strings" in ov_low) or ("soffice_not_available" in ov_low) or ("doc_low_signal" in ov_low)
-                try:
-                    soffice_ok = bool(shutil.which("soffice"))
-                except Exception:
-                    soffice_ok = False
-                if soffice_ok and legacy_note:
-                    try:
-                        await asyncio.to_thread(
-                            project_store.ingest_uploaded_file,
-                            current_project_full,
-                            rel,
-                            caption_image_fn=_caption_image_bytes,
-                            classify_image_fn=_classify_image_wrapper,
-                        )
-                    except Exception:
-                        pass
-
                 dtxt = _find_latest_artifact_text_for_file(
                     current_project_full,
                     artifact_type="doc_text",
                     file_rel=rel,
-                    cap=26000,
+                    cap=12000,
                 )
-                if legacy_note or (not dtxt) or (len(dtxt.strip()) < 1500):
+                if not dtxt or len(dtxt.strip()) < 1500:
                     doc_partial_note = (
                         "Legacy .doc extraction is partial for this file. "
                         "You MUST acknowledge the limitation, propose conversion via LibreOffice "
                         "or a PDF/DOCX export, and include CAPABILITY_GAP_JSON with "
                         "recommended_search_queries for installing LibreOffice or converting .doc."
                     )
-
-                # Build a larger excerpt so the model can see past the definitions section.
-                if dtxt:
-                    try:
-                        t = dtxt.strip()
-                        if len(t) <= 18000:
-                            doc_excerpt = t
-                        else:
-                            low = t.lower()
-                            keys = [
-                                "interrogatory",
-                                "request for production",
-                                "requests for production",
-                                "request for admission",
-                                "requests for admission",
-                            ]
-                            idxs = [low.find(k) for k in keys if low.find(k) >= 0]
-                            idx = min(idxs) if idxs else -1
-
-                            head = t[:6000]
-                            if idx >= 0 and idx > 2000:
-                                start = max(0, idx - 2000)
-                                mid = t[start:start + 12000]
-                                doc_excerpt = head + "\n\n...[snip]...\n\n" + mid
-                            else:
-                                tail = t[-6000:]
-                                doc_excerpt = head + "\n\n...[snip]...\n\n" + tail
-
-                            if len(doc_excerpt) > 18000:
-                                doc_excerpt = doc_excerpt[:18000].rstrip() + "\n...[truncated]..."
-                    except Exception:
-                        doc_excerpt = ""
         except Exception:
             doc_partial_note = ""
 
@@ -10957,7 +9918,9 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             synthetic = (
                 f"I uploaded {base}.\n"
                 f"- Stored at: {rel or '(unknown path)'}\n\n"
-                + img_guard
+                "Hard requirement for images:\n"
+                "- You MUST use the stored image_semantics artifact (type=image_semantics, linked via from_files) as PRIMARY evidence.\n"
+                "- Do NOT rely on image_caption or OCR alone for what the image shows.\n\n"
                 + (f"{doc_partial_note}\n\n" if doc_partial_note else "")
                 + "Output format:\n"
                 "[USER_ANSWER]\n"
@@ -10995,31 +9958,19 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 "- Use ISO dates if possible; otherwise include raw dates as strings.\n"
                 "- Summary must be grounded in the file contents.\n"
                 "- FACT_LEDGER_JSON must be a JSON array (empty if no solid facts).\n"
-                "- Do NOT ask meta questions about analysis goals or output preferences.\n"
-                "- Ask only ONE precise question about missing pages, unclear fields, or verification.\n"
             ).strip()
-            if doc_excerpt:
-                synthetic = (
-                    synthetic
-                    + "\n\nDOCUMENT_TEXT_EXCERPT (from stored doc_text):\n"
-                    + doc_excerpt
-                )
         else:
             synthetic = (
                 f"I uploaded {base}.\n"
                 f"- Stored at: {rel or '(unknown path)'}\n\n"
-                + img_guard
-                + "Give me:\n"
+                "Hard requirement for images:\n"
+                "- You MUST use the stored image_semantics artifact (type=image_semantics, linked via from_files) as PRIMARY evidence.\n"
+                "- Do NOT rely on image_caption or OCR alone for what the image shows.\n\n"
+                "Give me:\n"
                 "1) What the file is (short)\n"
                 "2) Why it matters to this project (grounded)\n"
                 "3) The next suggested action\n"
             ).strip()
-            if doc_excerpt:
-                synthetic = (
-                    synthetic
-                    + "\n\nDOCUMENT_TEXT_EXCERPT (from stored doc_text):\n"
-                    + doc_excerpt
-                )
 
 
         try:
@@ -11156,172 +10107,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             return f"{r}|analysis:{ver}"
         return r
 
-    def _analysis_file_sha(rel: str) -> str:
-        rel0 = (rel or "").replace("\\", "/").strip()
-        if not rel0:
-            return ""
-        try:
-            m = load_manifest(current_project_full) or {}
-        except Exception:
-            m = {}
-        raw_files = m.get("raw_files") if isinstance(m.get("raw_files"), list) else []
-        for rf in raw_files:
-            if not isinstance(rf, dict):
-                continue
-            rp = str(rf.get("path") or "").replace("\\", "/").strip()
-            if rp == rel0:
-                return str(rf.get("sha256") or "").strip()
-        return ""
-
-    def _analysis_gap_id(prefix: str, rel: str) -> str:
-        sha = _analysis_file_sha(rel)
-        base = (sha[:12] if sha else (Path(rel).stem[:12] if rel else "file"))
-        return f"gap_{prefix}_{base}"
-
-    def _analysis_record_gap(
-        *,
-        rel: str,
-        orig_name: str,
-        task_summary: str,
-        limitations: List[str],
-        missing_capabilities: List[str],
-        needed_inputs: List[str],
-        suggested_features: List[str],
-        recommended_search_queries: List[str],
-    ) -> None:
-        rel0 = (rel or "").replace("\\", "/").strip()
-        if not rel0:
-            return
-        gap_id = _analysis_gap_id("analysis_blocked", rel0)
-        try:
-            if project_store.capability_gap_exists(current_project_full, gap_id):
-                return
-        except Exception:
-            pass
-        entry = {
-            "id": gap_id,
-            "blocked": True,
-            "task_summary": task_summary,
-            "limitations": limitations or [],
-            "missing_capabilities": missing_capabilities or [],
-            "needed_inputs": needed_inputs or [],
-            "suggested_features": suggested_features or [],
-            "recommended_search_queries": recommended_search_queries or [],
-            "created_at": now_iso(),
-            "source_file": rel0,
-            "orig_name": orig_name or Path(rel0).name,
-        }
-        try:
-            project_store.append_capability_gap_entry(current_project_full, entry)
-            project_store.build_capability_gap_views_and_write(current_project_full)
-        except Exception:
-            pass
-
-    def _pdf_text_is_error(text: str) -> bool:
-        t = (text or "").strip()
-        if not t:
-            return False
-        return t.startswith("(") and ("PDF error" in t[:80])
-
-    async def _analysis_try_pdf_ocr(*, rel: str, orig_name: str) -> bool:
-        rel0 = (rel or "").replace("\\", "/").strip()
-        if not rel0:
-            return False
-        try:
-            abs_p = (PROJECT_ROOT / rel0).resolve()
-        except Exception:
-            abs_p = None
-        if not abs_p or (not abs_p.exists()):
-            _analysis_record_gap(
-                rel=rel0,
-                orig_name=orig_name,
-                task_summary="Extract text from PDF upload",
-                limitations=["File not found on disk."],
-                missing_capabilities=[],
-                needed_inputs=["Re-upload the PDF in this chat."],
-                suggested_features=[],
-                recommended_search_queries=[],
-            )
-            return False
-
-        if (project_store.convert_from_path is None) or (project_store.pytesseract is None):
-            _analysis_record_gap(
-                rel=rel0,
-                orig_name=orig_name,
-                task_summary="Extract text from scanned PDF upload",
-                limitations=["Scanned PDF OCR is not available in this environment."],
-                missing_capabilities=["pdf2image + poppler + pytesseract/tesseract"],
-                needed_inputs=["Install OCR dependencies or upload a text-based PDF."],
-                suggested_features=["Auto-install OCR toolchain for PDF ingestion"],
-                recommended_search_queries=[
-                    "install poppler windows pdf2image",
-                    "pytesseract windows install tesseract",
-                ],
-            )
-            return False
-
-        try:
-            txt = project_store.load_pdf_text(abs_p, allow_ocr=True, ocr_max_pages=25)
-        except Exception:
-            txt = ""
-        if _pdf_text_is_error(txt):
-            _analysis_record_gap(
-                rel=rel0,
-                orig_name=orig_name,
-                task_summary="Extract text from scanned PDF upload",
-                limitations=["OCR fallback returned an error."],
-                missing_capabilities=["Stable PDF OCR extraction"],
-                needed_inputs=["Re-export the PDF or provide a clearer scan."],
-                suggested_features=["Retry OCR with alternate engine or higher DPI"],
-                recommended_search_queries=[
-                    "tesseract improve OCR accuracy PDF",
-                    "pdf2image dpi increase ocr",
-                ],
-            )
-            return False
-
-        txt = (txt or "").strip()
-        if not txt:
-            _analysis_record_gap(
-                rel=rel0,
-                orig_name=orig_name,
-                task_summary="Extract text from scanned PDF upload",
-                limitations=["OCR ran but produced no text."],
-                missing_capabilities=["Higher-quality source or alternate OCR"],
-                needed_inputs=["Provide a clearer scan or a native-text PDF."],
-                suggested_features=["Offer guided re-scan / upload checklist"],
-                recommended_search_queries=[
-                    "improve OCR results scanned PDF",
-                ],
-            )
-            return False
-
-        try:
-            capped = txt[:200000]
-            project_store.create_artifact(
-                current_project_full,
-                f"pdf_text_{Path(rel0).stem}",
-                capped,
-                artifact_type="pdf_text",
-                from_files=[rel0],
-                file_ext=".txt",
-            )
-        except Exception:
-            pass
-        return True
-
-    async def _analysis_try_doc_reingest(*, rel: str) -> None:
-        try:
-            await asyncio.to_thread(
-                project_store.ingest_uploaded_file,
-                current_project_full,
-                rel,
-                caption_image_fn=_caption_image_bytes,
-                classify_image_fn=_classify_image_wrapper,
-            )
-        except Exception:
-            pass
-
     async def _run_analysis_backfill_for_file(*, rel: str, orig_name: str) -> bool:
         """
         Re-run analysis synthesis for a stored file (no chat spam).
@@ -11331,24 +10116,9 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         if not rel0:
             return False
         suf0 = Path(rel0).suffix.lower()
-        is_image = suf0 in IMAGE_SUFFIXES
 
-        if is_image:
-            try:
-                ok_txt, _src_txt, _txt_len = _upload_text_signal(current_project_full, rel0)
-            except Exception:
-                ok_txt = False
-
-            if ok_txt:
-                await _run_upload_expert_synthesis(
-                    orig_name=orig_name,
-                    canonical_rel=rel0,
-                    suppress_chat=True,
-                    suppress_history=True,
-                    image_mode="ocr_only",
-                )
-                return True
-
+        # For images, ensure semantics exists; do NOT proceed on OCR-only.
+        if suf0 in IMAGE_SUFFIXES:
             ok_v, _sem_json, note_v = await ensure_image_semantics_for_file(
                 current_project_full,
                 file_rel=rel0,
@@ -11356,17 +10126,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 reason="analysis_backfill",
             )
             if not ok_v:
-                _analysis_record_gap(
-                    rel=rel0,
-                    orig_name=orig_name,
-                    task_summary="Extract non-text content from image upload",
-                    limitations=["Vision semantics unavailable for this image."],
-                    missing_capabilities=["OPENAI_VISION_MODEL + OPENAI_API_KEY"],
-                    needed_inputs=["Enable vision and re-run analysis."],
-                    suggested_features=["OCR-first image handling with optional vision escalation"],
-                    recommended_search_queries=["OPENAI_VISION_MODEL vision enabled"],
-                )
-                return True
+                return False
             try:
                 sem_check = _find_latest_artifact_text_for_file(
                     current_project_full,
@@ -11377,87 +10137,14 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             except Exception:
                 sem_check = ""
             if not (sem_check or "").strip():
-                _analysis_record_gap(
-                    rel=rel0,
-                    orig_name=orig_name,
-                    task_summary="Extract non-text content from image upload",
-                    limitations=["Image semantics artifact missing after vision call."],
-                    missing_capabilities=["Stable vision artifact creation"],
-                    needed_inputs=["Re-run vision extraction."],
-                    suggested_features=["Verify artifact write + retry logic"],
-                    recommended_search_queries=[],
-                )
-                return True
+                return False
 
-            await _run_upload_expert_synthesis(
-                orig_name=orig_name,
-                canonical_rel=rel0,
-                suppress_chat=True,
-                suppress_history=True,
-                image_mode="require_semantics",
-            )
-            return True
-
-        # Non-image: ensure usable text, then run synthesis.
-        try:
-            ok_txt, _src_txt, _txt_len = _upload_text_signal(current_project_full, rel0)
-        except Exception:
-            ok_txt = False
-
-        if not ok_txt:
-            if suf0 == ".pdf":
-                await _analysis_try_pdf_ocr(rel=rel0, orig_name=orig_name)
-            elif suf0 in (".doc", ".docx"):
-                await _analysis_try_doc_reingest(rel=rel0)
-
-            try:
-                ok_txt, _src_txt, _txt_len = _upload_text_signal(current_project_full, rel0)
-            except Exception:
-                ok_txt = False
-
-        if ok_txt:
-            await _run_upload_expert_synthesis(
-                orig_name=orig_name,
-                canonical_rel=rel0,
-                suppress_chat=True,
-                suppress_history=True,
-            )
-            return True
-
-        # Still no usable text: record capability gap and stop.
-        if suf0 == ".pdf":
-            _analysis_record_gap(
-                rel=rel0,
-                orig_name=orig_name,
-                task_summary="Extract text from PDF upload",
-                limitations=["No readable text found after OCR attempt."],
-                missing_capabilities=["Higher-fidelity PDF text/OCR"],
-                needed_inputs=["Provide a text-based PDF or clearer scan."],
-                suggested_features=["Allow user-supplied OCR text paste"],
-                recommended_search_queries=["improve OCR scanned PDF"],
-            )
-        elif suf0 in (".doc", ".docx"):
-            _analysis_record_gap(
-                rel=rel0,
-                orig_name=orig_name,
-                task_summary="Extract text from Word document",
-                limitations=["No readable text extracted from the document."],
-                missing_capabilities=["LibreOffice conversion or robust DOC parser"],
-                needed_inputs=["Re-export as DOCX or PDF."],
-                suggested_features=["Auto-convert legacy .doc using LibreOffice"],
-                recommended_search_queries=["LibreOffice headless doc to docx"],
-            )
-        else:
-            _analysis_record_gap(
-                rel=rel0,
-                orig_name=orig_name,
-                task_summary="Extract text from uploaded file",
-                limitations=[f"No extractor for file type '{suf0 or 'unknown'}'."],
-                missing_capabilities=["File-type specific extractor"],
-                needed_inputs=["Upload a text-readable format."],
-                suggested_features=["Add extractor for this file type"],
-                recommended_search_queries=[],
-            )
+        await _run_upload_expert_synthesis(
+            orig_name=orig_name,
+            canonical_rel=rel0,
+            suppress_chat=True,
+            suppress_history=True,
+        )
         return True
 
     def _should_backfill_now() -> bool:
@@ -11471,18 +10158,13 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         return True
 
     async def _maybe_schedule_analysis_backfill(*, reason: str = "") -> None:
-        nonlocal backfill_inflight, analysis_backfill_pending
-        mode = (ANALYSIS_BACKFILL_MODE or "on_upload_only").strip().lower()
-        if mode == "off":
-            return
-        if mode == "on_upload_only" and not analysis_backfill_pending:
-            return
+        nonlocal backfill_inflight
         if backfill_inflight or (not _should_backfill_now()):
             return
         backfill_inflight = True
 
         async def _task() -> None:
-            nonlocal backfill_inflight, analysis_backfill_pending
+            nonlocal backfill_inflight
             processed = 0
             ingested = 0
             deduped = 0
@@ -11549,18 +10231,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             )
                         except Exception:
                             dtxt = ""
-                        try:
-                            ov_txt = _find_latest_artifact_text_for_file(
-                                current_project_full,
-                                artifact_type="file_overview",
-                                file_rel=rel,
-                                cap=4000,
-                            )
-                        except Exception:
-                            ov_txt = ""
-                        ov_low = (ov_txt or "").lower()
-                        legacy_note = ("doc_legacy_strings" in ov_low) or ("soffice_not_available" in ov_low) or ("doc_low_signal" in ov_low)
-                        if (not dtxt) or (len(dtxt.strip()) < 1500) or legacy_note:
+                        if not dtxt or len(dtxt.strip()) < 1500:
                             ingest_targets.append(rf)
                             ingest_seen.add(rel)
 
@@ -11659,7 +10330,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     except Exception:
                         pass
             finally:
-                analysis_backfill_pending = False
                 backfill_inflight = False
 
         try:
@@ -11671,34 +10341,48 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         """
         Batch-level synthesis after ZIP extraction completes.
         """
-        nonlocal analysis_backfill_pending
-        if not _effective_analysis_hat():
+        if str(active_expert or "").strip().lower() != "analysis":
             return
-        analysis_backfill_pending = True
+        synthetic = (
+            f"A ZIP batch has finished ingesting.\n"
+            f"- Batch ID: {batch_id}\n"
+            f"- ZIP: {zip_name}\n"
+            f"- Files: {total}\n\n"
+            "Use the discovery index, fact ledger, timeline, issues/questions, and conflict report.\n"
+            "Give:\n"
+            "1) A concise batch summary (4-8 sentences)\n"
+            "2) The top 3 issues or weak points\n"
+            "3) The top 3 missing items to request\n"
+            "4) The next best action\n"
+            "Ask ONE precise question.\n"
+        ).strip()
+
         try:
-            ans = _format_batch_summary_deterministic(
-                batch_id=batch_id,
-                zip_name=zip_name,
-                total=total,
+            out = await model_pipeline.run_request_pipeline(
+                ctx=sys.modules[__name__],
+                current_project_full=current_project_full,
+                clean_user_msg=synthetic,
+                do_search=False,
+                search_results="",
+                conversation_history=conversation_history,
+                max_history_pairs=MAX_HISTORY_PAIRS,
+                server_file_path=Path(__file__).resolve(),
+                active_expert=active_expert,
             )
+        except Exception:
+            return
+
+        try:
+            ans = str((out or {}).get("user_answer") or "").strip()
         except Exception:
             ans = ""
         if not ans:
             return
 
-        # Progress bar: mark batch complete in UI
         try:
-            frame = _ws_frame(
-                1,
-                "upload.batch.progress",
-                project=current_project,
-                batch_id=batch_id,
-                zip_name=zip_name,
-                done=total,
-                total=total,
-                state="done",
-            )
-            await _ws_send_safe(frame)
+            ch2 = (out or {}).get("conversation_history")
+            if isinstance(ch2, list):
+                conversation_history[:] = ch2
         except Exception:
             pass
 
@@ -11754,21 +10438,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         if key in _upload_synthesis_inflight:
             return
         if _upload_synthesis_already_done(current_project_full, key):
-            # Allow one auto-rerun in analysis mode if no discovery index entry exists yet.
-            try:
-                is_analysis_hat = str(active_expert or "").strip().lower() == "analysis"
-                suf_retry = Path((canonical_rel or "")).suffix.lower()
-                wants_retry = is_analysis_hat and suf_retry in (".doc", ".docx", ".pdf")
-            except Exception:
-                wants_retry = False
-
-            if wants_retry and _analysis_missing_discovery_index(current_project_full, canonical_rel, orig_name):
-                if key not in _upload_synthesis_rerun_guard:
-                    _upload_synthesis_rerun_guard.add(key)
-                else:
-                    return
-            else:
-                return
+            return
 
         _upload_synthesis_inflight.add(key)
         # IMPORTANT: do NOT mark "done" until AFTER we have either:
@@ -11779,77 +10449,10 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
         async def _task() -> None:
             try:
-                is_analysis_hat = _effective_analysis_hat()
-                image_mode = "require_semantics"
                 # IMAGE uploads: ensure vision semantics exist BEFORE expert synthesis runs.
                 # Block synthesis for images until semantics is present (or cached).
                 ok_v = True
                 note_v = ""
-                async def _mark_done_and_progress() -> None:
-                    _upload_synthesis_mark_done(
-                        current_project_full,
-                        key=key,
-                        canonical_rel=canonical_rel,
-                        orig_name=orig_name,
-                    )
-                    if batch_mode:
-                        try:
-                            b = project_store.mark_upload_batch_file_done(
-                                current_project_full,
-                                batch_id=batch_id,
-                                canonical_rel=canonical_rel,
-                            )
-                        except Exception:
-                            b = {}
-                        try:
-                            if isinstance(b, dict):
-                                total = int(b.get("total") or 0)
-                                remaining = int(b.get("remaining") or 0)
-                                done = max(0, total - remaining) if total else 0
-                                state = "done" if str(b.get("status") or "") == "done" else "progress"
-                                frame = _ws_frame(
-                                    1,
-                                    "upload.batch.progress",
-                                    project=current_project,
-                                    batch_id=batch_id,
-                                    zip_name=str(b.get("zip_name") or ""),
-                                    done=done,
-                                    total=total,
-                                    state=state,
-                                )
-                                await _ws_send_safe(frame)
-                        except Exception:
-                            pass
-                        if isinstance(b, dict):
-                            b_status = str(b.get("status") or "")
-                            summary_done = bool(b.get("summary_done", False))
-                            if b_status == "done" and not summary_done:
-                                try:
-                                    project_store.mark_upload_batch_summary_done(current_project_full, batch_id=batch_id)
-                                except Exception:
-                                    pass
-                                try:
-                                    frame = _ws_frame(
-                                        1,
-                                        "upload.batch.progress",
-                                        project=current_project,
-                                        batch_id=batch_id,
-                                        zip_name=str(b.get("zip_name") or ""),
-                                        done=int(b.get("total") or 0),
-                                        total=int(b.get("total") or 0),
-                                        state="finalizing",
-                                    )
-                                    await _ws_send_safe(frame)
-                                except Exception:
-                                    pass
-                                try:
-                                    await _run_upload_batch_summary(
-                                        batch_id=batch_id,
-                                        zip_name=str(b.get("zip_name") or ""),
-                                        total=int(b.get("total") or 0),
-                                    )
-                                except Exception:
-                                    pass
 
                 try:
                     rel0 = (canonical_rel or "").replace("\\", "/").strip()
@@ -11890,58 +10493,28 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         except Exception:
                             pass
 
-                        if is_analysis_hat:
-                            # OCR-first for analysis: if OCR has strong text, allow OCR-only.
-                            try:
-                                ok_txt, _src_txt, _txt_len = _upload_text_signal(current_project_full, rel0)
-                            except Exception:
-                                ok_txt = False
-                            if ok_txt:
-                                image_mode = "ocr_only"
-                                ok_v = True
-                            else:
-                                ok_v, _sem_json, note_v = await ensure_image_semantics_for_file(
-                                    current_project_full,
-                                    file_rel=rel0,
-                                    force=False,
-                                    reason="upload_auto_synthesis",
-                                )
-                                if ok_v:
-                                    try:
-                                        sem_check = _find_latest_artifact_text_for_file(
-                                            current_project_full,
-                                            artifact_type="image_semantics",
-                                            file_rel=rel0,
-                                            cap=220000,
-                                        )
-                                    except Exception:
-                                        sem_check = ""
-                                    if not (sem_check or "").strip():
-                                        ok_v = False
-                                        note_v = "image_semantics_artifact_missing_after_ensure"
-                        else:
-                            ok_v, _sem_json, note_v = await ensure_image_semantics_for_file(
-                                current_project_full,
-                                file_rel=rel0,
-                                force=False,
-                                reason="upload_auto_synthesis",
-                            )
+                        ok_v, _sem_json, note_v = await ensure_image_semantics_for_file(
+                            current_project_full,
+                            file_rel=rel0,
+                            force=False,
+                            reason="upload_auto_synthesis",
+                        )
 
-                            # Verify the required artifact actually exists and is linked via from_files.
-                            # (Mandatory: do NOT proceed to expert synthesis on caption/OCR-only evidence.)
-                            if ok_v:
-                                try:
-                                    sem_check = _find_latest_artifact_text_for_file(
-                                        current_project_full,
-                                        artifact_type="image_semantics",
-                                        file_rel=rel0,
-                                        cap=220000,
-                                    )
-                                except Exception:
-                                    sem_check = ""
-                                if not (sem_check or "").strip():
-                                    ok_v = False
-                                    note_v = "image_semantics_artifact_missing_after_ensure"
+                        # Verify the required artifact actually exists and is linked via from_files.
+                        # (Mandatory: do NOT proceed to expert synthesis on caption/OCR-only evidence.)
+                        if ok_v:
+                            try:
+                                sem_check = _find_latest_artifact_text_for_file(
+                                    current_project_full,
+                                    artifact_type="image_semantics",
+                                    file_rel=rel0,
+                                    cap=220000,
+                                )
+                            except Exception:
+                                sem_check = ""
+                            if not (sem_check or "").strip():
+                                ok_v = False
+                                note_v = "image_semantics_artifact_missing_after_ensure"
 
                 except Exception as e:
                     ok_v = False
@@ -11950,122 +10523,16 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 # Only run expert synthesis after semantics exists (or non-image).
                 if ok_v:
                     # Batch mode: suppress per-file chat/history, but still extract discovery/ledger.
+                    is_analysis_hat = str(active_expert or "").strip().lower() == "analysis"
                     suppress_chat = bool(batch_mode)
                     suppress_hist = bool(batch_mode)
-                    # Analysis hat: ensure we have usable text before synthesis (OCR-first ladder).
-                    if is_analysis_hat:
-                        try:
-                            rel_txt = (canonical_rel or "").replace("\\", "/").strip()
-                            suf_txt = Path(rel_txt).suffix.lower()
-                        except Exception:
-                            rel_txt = ""
-                            suf_txt = ""
-
-                        if rel_txt and (suf_txt not in IMAGE_SUFFIXES):
-                            try:
-                                ok_txt, _src_txt, _txt_len = _upload_text_signal(current_project_full, rel_txt)
-                            except Exception:
-                                ok_txt = False
-
-                            if not ok_txt:
-                                if suf_txt == ".pdf":
-                                    await _analysis_try_pdf_ocr(rel=rel_txt, orig_name=orig_name)
-                                elif suf_txt in (".doc", ".docx"):
-                                    await _analysis_try_doc_reingest(rel=rel_txt)
-
-                                try:
-                                    ok_txt, _src_txt, _txt_len = _upload_text_signal(current_project_full, rel_txt)
-                                except Exception:
-                                    ok_txt = False
-
-                            if not ok_txt:
-                                if suf_txt == ".pdf":
-                                    _analysis_record_gap(
-                                        rel=rel_txt,
-                                        orig_name=orig_name,
-                                        task_summary="Extract text from PDF upload",
-                                        limitations=["No readable text found after OCR attempt."],
-                                        missing_capabilities=["Higher-fidelity PDF text/OCR"],
-                                        needed_inputs=["Provide a text-based PDF or clearer scan."],
-                                        suggested_features=["Allow user-supplied OCR text paste"],
-                                        recommended_search_queries=["improve OCR scanned PDF"],
-                                    )
-                                elif suf_txt in (".doc", ".docx"):
-                                    _analysis_record_gap(
-                                        rel=rel_txt,
-                                        orig_name=orig_name,
-                                        task_summary="Extract text from Word document",
-                                        limitations=["No readable text extracted from the document."],
-                                        missing_capabilities=["LibreOffice conversion or robust DOC parser"],
-                                        needed_inputs=["Re-export as DOCX or PDF."],
-                                        suggested_features=["Auto-convert legacy .doc using LibreOffice"],
-                                        recommended_search_queries=["LibreOffice headless doc to docx"],
-                                    )
-                                else:
-                                    _analysis_record_gap(
-                                        rel=rel_txt,
-                                        orig_name=orig_name,
-                                        task_summary="Extract text from uploaded file",
-                                        limitations=[f"No extractor for file type '{suf_txt or 'unknown'}'."],
-                                        missing_capabilities=["File-type specific extractor"],
-                                        needed_inputs=["Upload a text-readable format."],
-                                        suggested_features=["Add extractor for this file type"],
-                                        recommended_search_queries=[],
-                                    )
-                                if not suppress_chat:
-                                    try:
-                                        msg = (
-                                            f"I couldn't extract readable text from {orig_name or Path(rel_txt).name}. "
-                                            "I logged a capability gap so we can fix it."
-                                        ).strip()
-                                        await websocket.send(msg)
-                                    except Exception:
-                                        pass
-                                await _mark_done_and_progress()
-                                return
-                    # OCR-only fast path (non-image): only for non-analysis hats.
-                    if not is_analysis_hat:
-                        try:
-                            rel_txt = (canonical_rel or "").replace("\\", "/").strip()
-                            suf_txt = Path(rel_txt).suffix.lower()
-                            if rel_txt and (suf_txt not in IMAGE_SUFFIXES):
-                                ok_txt, src_txt, txt_len = _upload_text_signal(current_project_full, rel_txt)
-                                if ok_txt:
-                                    try:
-                                        _record_ocr_only_index(
-                                            rel=rel_txt,
-                                            orig_name=(orig_name or Path(rel_txt).name),
-                                            source=src_txt,
-                                            text_len=txt_len,
-                                        )
-                                    except Exception:
-                                        pass
-
-                                    # Optional: tell the user (non-batch only) that OCR was sufficient
-                                    if not suppress_chat:
-                                        try:
-                                            msg = (
-                                                f"I pulled the text from {orig_name or Path(rel_txt).name} "
-                                                f"({src_txt}). It is stored and ready. "
-                                                "If you want a deeper analysis, tell me what to extract."
-                                            ).strip()
-                                            await websocket.send(msg)
-                                        except Exception:
-                                            pass
-
-                                    await _mark_done_and_progress()
-                                    return
-                        except Exception:
-                            pass
 
                     if (not batch_mode) or is_analysis_hat:
-
                         await _run_upload_expert_synthesis(
                             orig_name=orig_name,
                             canonical_rel=canonical_rel,
                             suppress_chat=suppress_chat,
                             suppress_history=suppress_hist,
-                            image_mode=image_mode,
                         )
 
                     # Non-spam + correctness: only mark done after successful synthesis.
@@ -12087,47 +10554,12 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         except Exception:
                             b = {}
 
-                        # Progress bar update for batch mode
-                        try:
-                            if isinstance(b, dict):
-                                total = int(b.get("total") or 0)
-                                remaining = int(b.get("remaining") or 0)
-                                done = max(0, total - remaining) if total else 0
-                                state = "done" if str(b.get("status") or "") == "done" else "progress"
-                                frame = _ws_frame(
-                                    1,
-                                    "upload.batch.progress",
-                                    project=current_project,
-                                    batch_id=batch_id,
-                                    zip_name=str(b.get("zip_name") or ""),
-                                    done=done,
-                                    total=total,
-                                    state=state,
-                                )
-                                await _ws_send_safe(frame)
-                        except Exception:
-                            pass
-
                         if isinstance(b, dict):
                             b_status = str(b.get("status") or "")
                             summary_done = bool(b.get("summary_done", False))
                             if b_status == "done" and not summary_done:
                                 try:
                                     project_store.mark_upload_batch_summary_done(current_project_full, batch_id=batch_id)
-                                except Exception:
-                                    pass
-                                try:
-                                    frame = _ws_frame(
-                                        1,
-                                        "upload.batch.progress",
-                                        project=current_project,
-                                        batch_id=batch_id,
-                                        zip_name=str(b.get("zip_name") or ""),
-                                        done=int(b.get("total") or 0),
-                                        total=int(b.get("total") or 0),
-                                        state="finalizing",
-                                    )
-                                    await _ws_send_safe(frame)
                                 except Exception:
                                     pass
                                 try:
@@ -12145,19 +10577,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         rel_fail = (canonical_rel or "").replace("\\", "/").strip()
                         suf_fail = Path(rel_fail).suffix.lower()
                         if rel_fail and (suf_fail in IMAGE_SUFFIXES):
-                            if is_analysis_hat:
-                                _analysis_record_gap(
-                                    rel=rel_fail,
-                                    orig_name=orig_name,
-                                    task_summary="Extract non-text content from image upload",
-                                    limitations=["Vision semantics unavailable for this image."],
-                                    missing_capabilities=["OPENAI_VISION_MODEL + OPENAI_API_KEY"],
-                                    needed_inputs=["Enable vision and re-run analysis."],
-                                    suggested_features=["OCR-first image handling with optional vision escalation"],
-                                    recommended_search_queries=["OPENAI_VISION_MODEL vision enabled"],
-                                )
-                                await _mark_done_and_progress()
-                                return
                             vision_model = (os.environ.get("OPENAI_VISION_MODEL") or "").strip()
                             api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
 
@@ -12266,27 +10685,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             except Exception:
                 pass
 
-            # Optional: per-turn usage debug frame (hidden UI)
-            try:
-                if DEBUG_USAGE_ENABLED:
-                    s0 = m.lstrip()
-                    looks_json = s0.startswith("{") and ("\"type\"" in s0 or "\"v\"" in s0)
-                    if (not looks_json) and (not bool(_USAGE_SENT.get())):
-                        u = _usage_ctx_get()
-                        if isinstance(u, dict) and int(u.get("calls") or 0) > 0:
-                            frame = _ws_frame(
-                                1,
-                                "debug.usage",
-                                trace_id=get_current_audit_trace_id(),
-                                ts=now_iso(),
-                                usage=u,
-                                total=_usage_totals_snapshot(),
-                            )
-                            await _orig_send(frame)
-                            _USAGE_SENT.set(True)
-            except Exception:
-                pass
-
             return True
         except Exception as e:
             print(f"[WS] send failed: {e!r}")
@@ -12316,6 +10714,14 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         async for raw_msg in websocket:
             # Per-turn flag: set True only when THIS incoming message actually changes projects.
             project_changed = False
+            # Per-turn audit trace id (context-local; safe under asyncio tasks)
+            try:
+                _trace_id = f"turn_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+                _AUDIT_TRACE_ID.set(_trace_id)
+                # Reset per-turn decision context (so prior turns can't leak into this audit row)
+                _audit_ctx_reset()                
+            except Exception:
+                pass
             # ----------------------------
             # WS Frame Envelope (v1)
             # Accept:
@@ -12324,7 +10730,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             # ----------------------------
             frame_obj: Dict[str, Any] = {}
             is_frame = False
-            ftype = ""
 
             try:
                 if isinstance(raw_msg, str) and raw_msg.strip().startswith("{"):
@@ -12338,60 +10743,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             if is_frame:
                 ftype = str(frame_obj.get("type") or "").strip()
 
-            action_name = "ws.recv"
-            if is_frame and ftype:
-                if ftype in ("thread.get", "greeting.request", "chat.send", "upload.synthesize", "ws.ping"):
-                    action_name = ftype
-            elif not is_frame:
-                action_name = "chat.send"
-
-            action_detail: Optional[Dict[str, Any]] = None
-            if is_frame and ftype in ("thread.get", "greeting.request"):
-                try:
-                    action_detail = {
-                        "project": str(frame_obj.get("project") or "").strip(),
-                        "reason": str(frame_obj.get("reason") or "").strip(),
-                    }
-                except Exception:
-                    action_detail = None
-            elif is_frame and ftype == "chat.send":
-                try:
-                    action_detail = {
-                        "project": str(frame_obj.get("project") or "").strip(),
-                    }
-                except Exception:
-                    action_detail = None
-
-            trace_id = ""
-            if is_frame:
-                trace_id = str(frame_obj.get("trace_id") or "").strip()
-            if not trace_id:
-                trace_id = _TRACE.new_trace(action_name, conn_id, current_project, detail=action_detail)
-            else:
-                trace_id = _TRACE.new_trace(action_name, conn_id, current_project, trace_id=trace_id, detail=action_detail)
-
-            try:
-                _AUDIT_TRACE_ID.set(trace_id)
-                # Reset per-turn decision context (so prior turns can't leak into this audit row)
-                _audit_ctx_reset()
-            except Exception:
-                pass
-            try:
-                _usage_ctx_reset()
-            except Exception:
-                pass
-
-            try:
-                _TRACE.span(
-                    trace_id,
-                    "ws.recv",
-                    current_project,
-                    detail={"type": ftype or ("raw" if isinstance(raw_msg, str) else "binary")},
-                    conn_id=conn_id,
-                )
-            except Exception:
-                pass
-            if is_frame:
                 # UI heartbeat: allow legacy ping/pong unchanged
                 if ftype == "ws.ping":
                     try:
@@ -12403,145 +10754,38 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 # Upload status frames are server->UI only; ignore if received from client
                 if ftype == "upload.status":
                     continue
-                # Trace dump (debug only)
-                if ftype == "trace.dump":
-                    try:
-                        if DEBUG_USAGE_ENABLED:
-                            last_req = frame_obj.get("last", 200)
-                            try:
-                                last_n = int(last_req)
-                            except Exception:
-                                last_n = 200
-                            if last_n > 500:
-                                last_n = 500
-                            if last_n <= 0:
-                                last_n = 200
-                            trace_filter = str(frame_obj.get("trace_id") or "").strip()
-                            events = _TRACE.dump_events(last=last_n, trace_id=trace_filter)
-                        else:
-                            events = []
-                            trace_filter = str(frame_obj.get("trace_id") or "").strip()
-                        payload = {
-                            "v": 1,
-                            "type": "trace.dump",
-                            "conn_id": conn_id,
-                            "project": current_project,
-                            "events": events,
-                        }
-                        if trace_filter:
-                            payload["trace_id"] = trace_filter
-                        await websocket.send(json.dumps(payload, ensure_ascii=False))
-                    except Exception:
-                        pass
-                    continue
 
                 # UI thread history request (token-free): return canonical state/chat_log.jsonl
                 if ftype == "thread.get":
                     try:
-                        try:
-                            _TRACE.span(
-                                trace_id,
-                                "thread.get.start",
-                                current_project,
-                                detail={"project": str(frame_obj.get("project") or "").strip(), "reason": str(frame_obj.get("reason") or "").strip()},
-                                conn_id=conn_id,
-                            )
-                        except Exception:
-                            pass
                         proj_req = str(frame_obj.get("project") or "").strip()
-                        proj_short = path_engine.safe_project_name(proj_req, default_project_name=DEFAULT_PROJECT_NAME) if proj_req else current_project
+                        proj_short = safe_project_name(proj_req) if proj_req else current_project
                         proj_full = _full(proj_short)
 
                         # Make thread.get authoritative for current project (align server state)
                         if proj_short != current_project:
-                            try:
-                                _TRACE.span(
-                                    trace_id,
-                                    "project.switch.start",
-                                    proj_short,
-                                    detail={"from": current_project, "to": proj_short, "reason": "thread.get"},
-                                    conn_id=conn_id,
-                                )
-                            except Exception:
-                                pass
-                            old_short = current_project
                             old_full = current_project_full
                             current_project = proj_short
                             current_project_full = proj_full
                             _ws_move_client(old_full, current_project_full, websocket)
-                            try:
-                                _TRACE.span(
-                                    trace_id,
-                                    "project.switch.end",
-                                    current_project,
-                                    detail={"from": old_short, "to": proj_short, "reason": "thread.get"},
-                                    conn_id=conn_id,
-                                )
-                            except Exception:
-                                pass
                         _save_last_project(user, proj_short)
 
                         ensure_project_scaffold(proj_full)
 
                         msgs = read_chat_log_messages_for_ui(proj_full, max_messages=800)
-                        history_state = _history_state_for_project(proj_full, msgs)
                         payload = {
                             "v": 1,
                             "type": "thread.history",
                             "project": str(proj_short),
                             "messages": msgs,
-                            "trace_id": trace_id,
                         }
                         await websocket.send(json.dumps(payload, ensure_ascii=False))
-                        try:
-                            _TRACE.span(
-                                trace_id,
-                                "thread.history",
-                                proj_short,
-                                detail={"history_state": history_state},
-                                conn_id=conn_id,
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            _TRACE.span(
-                                trace_id,
-                                "thread.get.end",
-                                proj_short,
-                                detail={"history_state": history_state},
-                                conn_id=conn_id,
-                            )
-                        except Exception:
-                            pass
 
                         # FOUNDATIONAL:
                         # After the UI replays history for a project, emit a human greeting immediately.
                         # De-dupe per project so connect/thread.get/greeting.request can't double-fire.
                         try:
-                            should_emit, sup_reason = _greeting_should_emit(
-                                conn=conn_id,
-                                project_full=proj_full,
-                                history_state=history_state,
-                                reason="thread_get",
-                                is_expert_switch=False,
-                            )
-                            if not should_emit:
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.suppressed",
-                                    proj_short,
-                                    detail={"reason": sup_reason or "dedupe", "history_state": history_state},
-                                    conn_id=conn_id,
-                                )
-                            elif proj_full in greeted_projects:
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.suppressed",
-                                    proj_short,
-                                    detail={"reason": "project_dedupe", "history_state": history_state},
-                                    conn_id=conn_id,
-                                )
-                            else:
+                            if proj_full not in greeted_projects:
                                 greeted_projects.add(proj_full)
                                 gmsg = await build_contextual_greeting(
                                     user=user,
@@ -12552,67 +10796,27 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 if not (gmsg or "").strip():
                                     gmsg = "What are we working on today?"
                                 await websocket.send(str(gmsg).strip())
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.emit",
-                                    proj_short,
-                                    detail={"reason": "thread_get", "history_state": history_state},
-                                    conn_id=conn_id,
-                                )
-                        except Exception as e:
-                            try:
-                                _TRACE.span(trace_id, "exception", proj_short, detail={"where": "thread.get.greeting", "err": type(e).__name__}, conn_id=conn_id)
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
                         # NOTE:
                         # Greeting is already emitted above with de-duplication.
 
-                    except Exception as e:
+                    except Exception:
                         # fail silent: don't poison the session
-                        try:
-                            _TRACE.span(trace_id, "exception", current_project, detail={"where": "thread.get", "err": type(e).__name__}, conn_id=conn_id)
-                        except Exception:
-                            pass
+                        pass
                     continue
                 # UI greeting request (LLM-based, bounded)
                 # Purpose: allow the UI to request a contextual greeting AFTER it replays history.
                 if ftype == "greeting.request":
                     try:
-                        target_project = str(frame_obj.get("project") or current_project).strip() or current_project
+                        proj = str(frame_obj.get("project") or "").strip() or current_project
                         reason = str(frame_obj.get("reason") or "new_project").strip() or "new_project"
                         reason_l = reason.lower()
                         is_expert_switch = reason_l.startswith("expert_switch")
-                        # Persist last active expert on expert switch so uploads can auto-synthesize.
-                        if is_expert_switch:
-                            try:
-                                ex_id = reason_l.split(":", 1)[1].strip()
-                            except Exception:
-                                ex_id = ""
-                            if ex_id:
-                                try:
-                                    project_store.write_project_state_fields(
-                                        _full(path_engine.safe_project_name(proj, default_project_name=DEFAULT_PROJECT_NAME)),
-                                        {
-                                            "last_active_expert": ex_id,
-                                            "last_active_expert_at": now_iso(),
-                                        },
-                                    )
-                                except Exception:
-                                    pass
 
-                        proj_short = path_engine.safe_project_name(target_project, default_project_name=DEFAULT_PROJECT_NAME)
+                        proj_short = safe_project_name(proj)
                         proj_full = _full(proj_short)
                         ensure_project_scaffold(proj_full)
-                        history_state = _history_state_for_project(proj_full)
-                        if history_state != "empty":
-                            _TRACE.span(
-                                trace_id,
-                                "greeting.suppressed",
-                                proj_short,
-                                detail={"reason": "history_non_empty", "history_state": history_state},
-                                conn_id=conn_id,
-                            )
-                            continue
 
                         gmsg = ""
                         try:
@@ -12622,11 +10826,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 project_short=proj_short,
                                 reason=reason,
                             )
-                        except Exception as e:
-                            try:
-                                _TRACE.span(trace_id, "exception", proj_short, detail={"where": "greeting.request.build", "err": type(e).__name__}, conn_id=conn_id)
-                            except Exception:
-                                pass
+                        except Exception:
                             gmsg = ""
 
                         if not (gmsg or "").strip():
@@ -12637,181 +10837,11 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             k = f"{proj_full}|{reason_l}"
                             if k not in greeted_expert_switch:
                                 greeted_expert_switch.add(k)
-                                should_emit, sup_reason = _greeting_should_emit(
-                                    conn=conn_id,
-                                    project_full=proj_full,
-                                    history_state=history_state,
-                                    reason=reason,
-                                    is_expert_switch=True,
-                                )
-                                if not should_emit:
-                                    _TRACE.span(
-                                        trace_id,
-                                        "greeting.suppressed",
-                                        proj_short,
-                                        detail={"reason": sup_reason or "dedupe", "history_state": history_state},
-                                        conn_id=conn_id,
-                                    )
-                                else:
-                                    await websocket.send(str(gmsg).strip())
-                                    _TRACE.span(
-                                        trace_id,
-                                        "greeting.emit",
-                                        proj_short,
-                                        detail={"reason": reason, "history_state": history_state},
-                                        conn_id=conn_id,
-                                    )
-                            else:
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.suppressed",
-                                    proj_short,
-                                    detail={"reason": "expert_switch_dedupe", "history_state": history_state},
-                                    conn_id=conn_id,
-                                )
+                                await websocket.send(str(gmsg).strip())
                         else:
-                            should_emit, sup_reason = _greeting_should_emit(
-                                conn=conn_id,
-                                project_full=proj_full,
-                                history_state=history_state,
-                                reason=reason,
-                                is_expert_switch=False,
-                            )
-                            if not should_emit:
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.suppressed",
-                                    proj_short,
-                                    detail={"reason": sup_reason or "dedupe", "history_state": history_state},
-                                    conn_id=conn_id,
-                                )
-                            elif proj_full in greeted_projects:
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.suppressed",
-                                    proj_short,
-                                    detail={"reason": "project_dedupe", "history_state": history_state},
-                                    conn_id=conn_id,
-                                )
-                            else:
+                            if proj_full not in greeted_projects:
                                 greeted_projects.add(proj_full)
                                 await websocket.send(str(gmsg).strip())
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.emit",
-                                    proj_short,
-                                    detail={"reason": reason, "history_state": history_state},
-                                    conn_id=conn_id,
-                                )
-                    except Exception as e:
-                        try:
-                            tp = str(frame_obj.get("project") or current_project).strip() or current_project
-                            _TRACE.span(trace_id, "exception", tp, detail={"where": "greeting.request", "err": type(e).__name__}, conn_id=conn_id)
-                        except Exception:
-                            pass
-                    continue
-                # UI upload synthesis request (no user-visible "insert to chat" step)
-                if ftype == "upload.synthesize":
-                    try:
-                        proj = str(frame_obj.get("project") or "").strip() or current_project
-                        proj_short = path_engine.safe_project_name(proj, default_project_name=DEFAULT_PROJECT_NAME)
-                        proj_full = _full(proj_short)
-                        ensure_project_scaffold(proj_full)
-
-                        # Align server project context with the requested project
-                        if proj_short != current_project:
-                            old_full = current_project_full
-                            current_project = proj_short
-                            current_project_full = proj_full
-                            _ws_move_client(old_full, current_project_full, websocket)
-                            _save_last_project(user, proj_short)
-
-                        rel = str(frame_obj.get("relative_path") or "").replace("\\", "/").strip()
-                        file_key = str(frame_obj.get("file_key") or "").strip()
-                        orig_name = str(frame_obj.get("orig_name") or file_key or "").strip()
-
-                        # Resolve path from manifest if needed
-                        if not rel:
-                            try:
-                                m2 = load_manifest(current_project_full) or {}
-                                raw_files2 = m2.get("raw_files") if isinstance(m2.get("raw_files"), list) else []
-                                base0 = Path(file_key or orig_name).name.lower()
-                                for rf in reversed(raw_files2):
-                                    if not isinstance(rf, dict):
-                                        continue
-                                    relp = str(rf.get("path") or "").replace("\\", "/").strip()
-                                    if not relp:
-                                        continue
-                                    cand_names = []
-                                    cand_names.append(str(rf.get("orig_name") or "").strip())
-                                    cand_names.append(str(rf.get("saved_name") or "").strip())
-                                    cand_names.append(Path(relp).name)
-                                    cand_norm = [Path(x).name.lower() for x in cand_names if x]
-                                    if any(n == base0 for n in cand_norm):
-                                        rel = relp
-                                        break
-                                    if any(n.endswith(base0) for n in cand_norm):
-                                        rel = relp
-                                        break
-                            except Exception:
-                                rel = ""
-
-                        if not rel:
-                            continue
-
-                        # Set active object for continuity
-                        try:
-                            project_store.save_active_object(
-                                current_project_full,
-                                {
-                                    "rel_path": rel,
-                                    "orig_name": (orig_name or Path(rel).name),
-                                    "sha256": "",
-                                    "mime": "",
-                                    "set_reason": "upload_synthesize_request",
-                                },
-                            )
-                        except Exception:
-                            pass
-
-                        key = _analysis_backfill_key(rel) or (rel or orig_name)
-                        force = bool(frame_obj.get("force", False))
-
-                        if not force:
-                            if key in _upload_synthesis_inflight:
-                                continue
-                            if _upload_synthesis_already_done(current_project_full, key):
-                                continue
-
-                        _upload_synthesis_inflight.add(key)
-
-                        async def _task() -> None:
-                            try:
-                                await _run_upload_expert_synthesis(
-                                    orig_name=(orig_name or Path(rel).name),
-                                    canonical_rel=rel,
-                                    suppress_chat=False,
-                                    suppress_history=False,
-                                )
-                                _upload_synthesis_mark_done(
-                                    current_project_full,
-                                    key=key,
-                                    canonical_rel=rel,
-                                    orig_name=(orig_name or Path(rel).name),
-                                )
-                            finally:
-                                try:
-                                    _upload_synthesis_inflight.discard(key)
-                                except Exception:
-                                    pass
-
-                        try:
-                            asyncio.create_task(_task())
-                        except Exception:
-                            try:
-                                _upload_synthesis_inflight.discard(key)
-                            except Exception:
-                                pass
                     except Exception:
                         pass
                     continue
@@ -12826,16 +10856,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         ).strip()
                         if ae:
                             active_expert = ae
-                            try:
-                                project_store.write_project_state_fields(
-                                    current_project_full,
-                                    {
-                                        "last_active_expert": active_expert,
-                                        "last_active_expert_at": now_iso(),
-                                    },
-                                )
-                            except Exception:
-                                pass
                     except Exception:
                         pass
 
@@ -12858,36 +10878,15 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         if proj:
                             old_short = current_project
                             old_full = current_project_full
-                            current_project = path_engine.safe_project_name(proj, default_project_name=DEFAULT_PROJECT_NAME)
+                            current_project = safe_project_name(proj)
                             current_project_full = _full(current_project)
                             _save_last_project(user, current_project)
 
                             if current_project != old_short:
-                                try:
-                                    _TRACE.span(
-                                        trace_id,
-                                        "project.switch.start",
-                                        current_project,
-                                        detail={"from": old_short, "to": current_project, "reason": "chat.send"},
-                                        conn_id=conn_id,
-                                    )
-                                except Exception:
-                                    pass
                                 project_changed = True
 
                             ensure_project_scaffold(current_project_full)
                             _ws_move_client(old_full, current_project_full, websocket)
-                            if current_project != old_short:
-                                try:
-                                    _TRACE.span(
-                                        trace_id,
-                                        "project.switch.end",
-                                        current_project,
-                                        detail={"from": old_short, "to": current_project, "reason": "chat.send"},
-                                        conn_id=conn_id,
-                                    )
-                                except Exception:
-                                    pass
                     except Exception:
                         pass
 
@@ -12904,45 +10903,11 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                     project_short=current_project,
                                     reason="switch_project",
                                 )
-                                history_state = _history_state_for_project(current_project_full)
-                                should_emit, sup_reason = _greeting_should_emit(
-                                    conn=conn_id,
-                                    project_full=current_project_full,
-                                    history_state=history_state,
-                                    reason="switch_project",
-                                    is_expert_switch=False,
-                                )
-                                if not should_emit:
-                                    _TRACE.span(
-                                        trace_id,
-                                        "greeting.suppressed",
-                                        current_project,
-                                        detail={"reason": sup_reason or "dedupe", "history_state": history_state},
-                                        conn_id=conn_id,
-                                    )
-                                elif current_project_full in greeted_projects:
-                                    _TRACE.span(
-                                        trace_id,
-                                        "greeting.suppressed",
-                                        current_project,
-                                        detail={"reason": "project_dedupe", "history_state": history_state},
-                                        conn_id=conn_id,
-                                    )
-                                elif gmsg:
+                                if gmsg and (current_project_full not in greeted_projects):
                                     greeted_projects.add(current_project_full)
                                     await websocket.send(gmsg)
-                                    _TRACE.span(
-                                        trace_id,
-                                        "greeting.emit",
-                                        current_project,
-                                        detail={"reason": "switch_project", "history_state": history_state},
-                                        conn_id=conn_id,
-                                    )
-                            except Exception as e:
-                                try:
-                                    _TRACE.span(trace_id, "exception", current_project, detail={"where": "chat.send.switch_greeting", "err": type(e).__name__}, conn_id=conn_id)
-                                except Exception:
-                                    pass
+                            except Exception:
+                                pass
                     except Exception:
                         pass
 
@@ -12966,34 +10931,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
             if not user_msg:
                 continue
-
-            # -------------------------------------------------------------
-            # Analysis batch command (deterministic; no model call)
-            # -------------------------------------------------------------
-            try:
-                if _effective_analysis_hat() and _looks_like_batch_analysis_command(user_msg):
-                    bid, b = _resolve_batch_for_analysis(user_msg)
-                    if not bid or not isinstance(b, dict):
-                        # Provide available batch names if any
-                        try:
-                            bs = _load_upload_batches(current_project_full)
-                            batches = bs.get("batches") if isinstance(bs.get("batches"), dict) else {}
-                            names = [str(v.get("zip_name") or "") for v in batches.values() if isinstance(v, dict)]
-                            names = [n for n in names if n]
-                            if names:
-                                msg = "I couldn't find that batch. Available ZIPs:\n- " + "\n- ".join(names[:6])
-                            else:
-                                msg = "I couldn't find an upload batch for this chat."
-                        except Exception:
-                            msg = "I couldn't find an upload batch for this chat."
-                        await websocket.send(msg)
-                        last_full_answer_text = msg
-                        continue
-                    # Start async batch analysis
-                    asyncio.create_task(_run_manual_batch_analysis(batch_id=bid, batch=b))
-                    continue
-            except Exception:
-                pass
 
             # -------------------------------------------------------------
             # USER-SCOPED pending disambiguation consumption (Tier-2G assist)
@@ -13550,19 +11487,14 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         # LLM continuity classifier (preferred).
                         cont_obj: Dict[str, Any] = {}
                         try:
-                            use_llm_cont = bool(cand) and _should_use_llm_continuity(cand, active_topic_strength)
-                            if use_llm_cont:
+                            if cand:
                                 cont_obj = await model_pipeline.classify_continuity_c11(
                                     ctx=sys.modules[__name__],
                                     conversation_history=conversation_history,
                                     user_text=cand,
                                     active_topic_text=active_topic_text,
                                 )
-                        except Exception as e:
-                            try:
-                                _TRACE.span(trace_id, "exception", current_project, detail={"where": "routing.classify.llm", "err": type(e).__name__}, conn_id=conn_id)
-                            except Exception:
-                                pass
+                        except Exception:
                             cont_obj = {}
 
                         cont_label = ""
@@ -13641,17 +11573,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             except Exception:
                                 pass
 
-                            try:
-                                _TRACE.span(
-                                    trace_id,
-                                    "routing.classify",
-                                    current_project,
-                                    detail={"continuation": bool(cont_label != "new_topic"), "reason": "llm_c11", "label": cont_label},
-                                    conn_id=conn_id,
-                                )
-                            except Exception:
-                                pass
-
                         else:
                             # Fallback: deterministic continuation heuristics.
                             low_cand = cand.lower().strip()
@@ -13701,17 +11622,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             except Exception:
                                 continuity_label = "same_topic"
                             allow_history_in_lookup = True
-                            try:
-                                cont_reason = "fallback_pronoun" if pronoun_followup else ("fallback_picture" if picture_request else "fallback_heuristic")
-                                _TRACE.span(
-                                    trace_id,
-                                    "routing.classify",
-                                    current_project,
-                                    detail={"continuation": bool(continuity_label != "new_topic"), "reason": cont_reason, "label": continuity_label},
-                                    conn_id=conn_id,
-                                )
-                            except Exception:
-                                pass
 
                             # Update "last real question" only when this turn isn't generic/continuation.
                             if cand and (not continuation_op) and (not _is_generic_search_query(cand)):
@@ -13826,45 +11736,14 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             # No-op: avoid redundant switch churn or greeting spam.
                             _save_last_project(user, current_project)
                             continue
-                        old_short = current_project
                         old_full = current_project_full
-                        try:
-                            _TRACE.span(
-                                trace_id,
-                                "project.switch.start",
-                                sel,
-                                detail={"from": old_short, "to": sel, "reason": "command.select"},
-                                conn_id=conn_id,
-                            )
-                        except Exception:
-                            pass
                         current_project = sel
                         current_project_full = _full(current_project)
                         ensure_project_scaffold(current_project_full)
                         _ws_move_client(old_full, current_project_full, websocket)
-                        try:
-                            _TRACE.span(
-                                trace_id,
-                                "project.switch.end",
-                                current_project,
-                                detail={"from": old_short, "to": sel, "reason": "command.select"},
-                                conn_id=conn_id,
-                            )
-                        except Exception:
-                            pass
                         _save_last_project(user, current_project)
                         if suppress_switch_greeting:
                             await websocket.send(f"Project: {current_project}")
-                            try:
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.suppressed",
-                                    current_project,
-                                    detail={"reason": "startup_suppress", "history_state": _history_state_for_project(current_project_full)},
-                                    conn_id=conn_id,
-                                )
-                            except Exception:
-                                pass
                         else:
                             await websocket.send(_project_switch_message(current_project))
                             # Emit a human contextual greeting immediately on switch (no user input required).
@@ -13875,36 +11754,10 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                     project_short=current_project,
                                     reason="switch_project",
                                 )
-                                history_state = _history_state_for_project(current_project_full)
-                                should_emit, sup_reason = _greeting_should_emit(
-                                    conn=conn_id,
-                                    project_full=current_project_full,
-                                    history_state=history_state,
-                                    reason="switch_project",
-                                    is_expert_switch=False,
-                                )
-                                if not should_emit:
-                                    _TRACE.span(
-                                        trace_id,
-                                        "greeting.suppressed",
-                                        current_project,
-                                        detail={"reason": sup_reason or "dedupe", "history_state": history_state},
-                                        conn_id=conn_id,
-                                    )
-                                elif gmsg:
+                                if gmsg:
                                     await websocket.send(gmsg)
-                                    _TRACE.span(
-                                        trace_id,
-                                        "greeting.emit",
-                                        current_project,
-                                        detail={"reason": "switch_project", "history_state": history_state},
-                                        conn_id=conn_id,
-                                    )
-                            except Exception as e:
-                                try:
-                                    _TRACE.span(trace_id, "exception", current_project, detail={"where": "command.select.greeting", "err": type(e).__name__}, conn_id=conn_id)
-                                except Exception:
-                                    pass
+                            except Exception:
+                                pass
                         # Continuity: emit Resume only when the project has meaningful prior content.
                         try:
                             m0 = load_manifest(current_project_full) or {}
@@ -13926,7 +11779,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 # New / switch project (explicit only)
                     if cmd_lower.startswith(("new project:", "start project:", "new project ", "start project ")):
                         old_full = current_project_full
-                        old_short = current_project
                     # Accept both:
                     # - "new project: Alpha"
                     # - "new project Alpha"
@@ -13936,32 +11788,12 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     else:
                         parts = cmd_text.split(None, 2)  # ["new","project","Alpha..."]
                         arg = parts[2].strip() if len(parts) >= 3 else ""
-                    name = path_engine.safe_project_name(arg, default_project_name=DEFAULT_PROJECT_NAME)
+                    name = safe_project_name(arg)
 
-                    try:
-                        _TRACE.span(
-                            trace_id,
-                            "project.switch.start",
-                            name,
-                            detail={"from": old_short, "to": name, "reason": "command.new"},
-                            conn_id=conn_id,
-                        )
-                    except Exception:
-                        pass
                     current_project = name
                     current_project_full = _full(current_project)
                     ensure_project_scaffold(current_project_full)
                     _ws_move_client(old_full, current_project_full, websocket)
-                    try:
-                        _TRACE.span(
-                            trace_id,
-                            "project.switch.end",
-                            current_project,
-                            detail={"from": old_short, "to": name, "reason": "command.new"},
-                            conn_id=conn_id,
-                        )
-                    except Exception:
-                        pass
                     _save_last_project(user, current_project)
                     await websocket.send(_project_switch_message(current_project, prefix="Started new project:"))
                     # If this is a brand-new empty project, send a human first-line immediately.
@@ -13973,36 +11805,10 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             project_short=current_project,
                             reason="new_project",
                         )
-                        history_state = _history_state_for_project(current_project_full)
-                        should_emit, sup_reason = _greeting_should_emit(
-                            conn=conn_id,
-                            project_full=current_project_full,
-                            history_state=history_state,
-                            reason="new_project",
-                            is_expert_switch=False,
-                        )
-                        if not should_emit:
-                            _TRACE.span(
-                                trace_id,
-                                "greeting.suppressed",
-                                current_project,
-                                detail={"reason": sup_reason or "dedupe", "history_state": history_state},
-                                conn_id=conn_id,
-                            )
-                        elif gmsg:
+                        if gmsg:
                             await websocket.send(gmsg)
-                            _TRACE.span(
-                                trace_id,
-                                "greeting.emit",
-                                current_project,
-                                detail={"reason": "new_project", "history_state": history_state},
-                                conn_id=conn_id,
-                            )
-                    except Exception as e:
-                        try:
-                            _TRACE.span(trace_id, "exception", current_project, detail={"where": "command.new_project.greeting", "err": type(e).__name__}, conn_id=conn_id)
-                        except Exception:
-                            pass                    
+                    except Exception:
+                        pass                    
                     try:
                         m0 = load_manifest(current_project_full) or {}
                         has_goal0 = bool((m0.get("goal") or "").strip())
@@ -14053,7 +11859,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
                 if cmd_lower.startswith(("switch project:", "use project:", "switch project ", "use project ")):
                     old_full = current_project_full
-                    old_short = current_project
                     # Accept both:
                     # - "switch project: alpha"
                     # - "switch project alpha"
@@ -14063,7 +11868,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     else:
                         parts = cmd_text.split(None, 2)  # ["switch","project","alpha..."]
                         arg = parts[2].strip() if len(parts) >= 3 else ""
-                    name = path_engine.safe_project_name(arg, default_project_name=DEFAULT_PROJECT_NAME)
+                    name = safe_project_name(arg)
 
                     if name == current_project:
                         # No-op: avoid redundant switch churn or greeting spam.
@@ -14073,41 +11878,11 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     current_project = name
                     current_project_full = _full(current_project)
                     ensure_project_scaffold(current_project_full)
-                    try:
-                        _TRACE.span(
-                            trace_id,
-                            "project.switch.start",
-                            current_project,
-                            detail={"from": old_short, "to": current_project, "reason": "command.switch"},
-                            conn_id=conn_id,
-                        )
-                    except Exception:
-                        pass
                     _ws_move_client(old_full, current_project_full, websocket)
-                    try:
-                        _TRACE.span(
-                            trace_id,
-                            "project.switch.end",
-                            current_project,
-                            detail={"from": old_short, "to": current_project, "reason": "command.switch"},
-                            conn_id=conn_id,
-                        )
-                    except Exception:
-                        pass
                     _save_last_project(user, current_project)
 
                     if suppress_switch_greeting:
                         await websocket.send(f"Project: {current_project}")
-                        try:
-                            _TRACE.span(
-                                trace_id,
-                                "greeting.suppressed",
-                                current_project,
-                                detail={"reason": "startup_suppress", "history_state": _history_state_for_project(current_project_full)},
-                                conn_id=conn_id,
-                            )
-                        except Exception:
-                            pass
                     else:
                         await websocket.send(_project_switch_message(current_project))
 
@@ -14119,36 +11894,10 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 project_short=current_project,
                                 reason="switch_project",
                             )
-                            history_state = _history_state_for_project(current_project_full)
-                            should_emit, sup_reason = _greeting_should_emit(
-                                conn=conn_id,
-                                project_full=current_project_full,
-                                history_state=history_state,
-                                reason="switch_project",
-                                is_expert_switch=False,
-                            )
-                            if not should_emit:
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.suppressed",
-                                    current_project,
-                                    detail={"reason": sup_reason or "dedupe", "history_state": history_state},
-                                    conn_id=conn_id,
-                                )
-                            elif gmsg:
+                            if gmsg:
                                 await websocket.send(gmsg)
-                                _TRACE.span(
-                                    trace_id,
-                                    "greeting.emit",
-                                    current_project,
-                                    detail={"reason": "switch_project", "history_state": history_state},
-                                    conn_id=conn_id,
-                                )
-                        except Exception as e:
-                            try:
-                                _TRACE.span(trace_id, "exception", current_project, detail={"where": "command.switch.greeting", "err": type(e).__name__}, conn_id=conn_id)
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
 
                     # If the target project is empty, send a human first-line immediately.
                     try:
@@ -14356,40 +12105,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     and len(msg0) <= 220
                     and not low0.startswith(("[search]", "[nosearch]", "[pdf]", "switch project:", "use project:", "new project:", "start project:", "goal:", "patch"))
                 )
-                looks_like_path = (
-                    msg0.startswith("projects/")
-                    and bool(re.search(r"\.[A-Za-z0-9]{1,6}$", msg0))
-                    and "/raw/" in msg0.replace("\\", "/")
-                )
-
-                if looks_like_path:
-                    canonical_rel = msg0.replace("\\", "/").strip()
-                    reply, _why = _describe_resolved_file(current_project_full, canonical_rel, user_msg)
-                    if reply:
-                        try:
-                            project_store.save_active_object(
-                                current_project_full,
-                                {
-                                    "rel_path": canonical_rel,
-                                    "orig_name": Path(canonical_rel).name,
-                                    "sha256": "",
-                                    "mime": "",
-                                    "set_reason": "user_inserted_path",
-                                },
-                            )
-                            last_referential_file_rel = canonical_rel
-                        except Exception:
-                            pass
-                        await websocket.send(reply)
-                        last_full_answer_text = reply
-                        try:
-                            append_jsonl(
-                                state_dir(current_project_full) / "chat_log.jsonl",
-                                {"ts": now_iso(), "role": "assistant", "content": reply},
-                            )
-                        except Exception:
-                            pass
-                        continue
 
                 if looks_like_filename:
                     recs = []
@@ -14542,74 +12257,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         except Exception:
                             pass
                         continue
-                    else:
-                        # Fallback: resolve filename from manifest and use stored artifacts
-                        resolved_rel = ""
-                        try:
-                            m2 = load_manifest(current_project_full) or {}
-                            raw_files2 = m2.get("raw_files") if isinstance(m2.get("raw_files"), list) else []
-                            base0 = Path(msg0).name.lower()
-                            for rf in reversed(raw_files2):
-                                if not isinstance(rf, dict):
-                                    continue
-                                relp = str(rf.get("path") or "").replace("\\", "/").strip()
-                                if not relp:
-                                    continue
-                                cand_names = []
-                                cand_names.append(str(rf.get("orig_name") or "").strip())
-                                cand_names.append(str(rf.get("saved_name") or "").strip())
-                                cand_names.append(Path(relp).name)
-                                cand_norm = [Path(x).name.lower() for x in cand_names if x]
-                                if any(n == base0 for n in cand_norm):
-                                    resolved_rel = relp
-                                    break
-                                if any(n.endswith(base0) for n in cand_norm):
-                                    resolved_rel = relp
-                                    break
-                        except Exception:
-                            resolved_rel = ""
-
-                        if resolved_rel:
-                            # Set active object for continuity
-                            try:
-                                project_store.save_active_object(
-                                    current_project_full,
-                                    {
-                                        "rel_path": resolved_rel,
-                                        "orig_name": msg0,
-                                        "sha256": "",
-                                        "mime": "",
-                                        "set_reason": "user_inserted_filename_manifest",
-                                    },
-                                )
-                                last_referential_file_rel = resolved_rel
-                            except Exception:
-                                pass
-
-                            reply, _why = _describe_resolved_file(current_project_full, resolved_rel, user_msg)
-                            if reply:
-                                # If this looks like discovery requests, proactively ask for checklist extraction
-                                try:
-                                    dtxt = _find_latest_artifact_text_for_file(
-                                        current_project_full,
-                                        artifact_type="doc_text",
-                                        file_rel=resolved_rel,
-                                        cap=6000,
-                                    ).lower()
-                                except Exception:
-                                    dtxt = ""
-                                if dtxt and ("interrogator" in dtxt or "request for production" in dtxt or "request for admission" in dtxt):
-                                    reply = reply.rstrip() + "\n\nDo you want me to extract a numbered checklist of the Interrogatories, Requests for Production, and Requests for Admissions now?"
-                                await websocket.send(reply)
-                                last_full_answer_text = reply
-                                try:
-                                    append_jsonl(
-                                        state_dir(current_project_full) / "chat_log.jsonl",
-                                        {"ts": now_iso(), "role": "assistant", "content": reply},
-                                    )
-                                except Exception:
-                                    pass
-                                continue
             except Exception:
                 pass
                 
@@ -14905,24 +12552,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         or low0.startswith(("switch project:", "use project:", "new project:", "start project:", "goal:", "patch", "/selfpatch", "/serverpatch", "/patch-server", "[search]", "[nosearch]", "[pdf]"))
                     )
                     is_question = msg0.endswith("?")
-                    is_health_hat = _effective_health_hat()
-                    greeting_only = low0 in (
-                        "hi",
-                        "hello",
-                        "hey",
-                        "yo",
-                        "hiya",
-                        "howdy",
-                        "sup",
-                        "good morning",
-                        "good afternoon",
-                        "good evening",
-                        "good night",
-                        "morning",
-                        "evening",
-                        "gm",
-                        "gn",
-                    )
 
                     # ------------------------------------------------------------
                     # DO NOT TREAT CONSTRAINT-ONLY MESSAGES AS PROJECT GOALS
@@ -14962,7 +12591,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     # ------------------------------------------------------------
                     # NORMAL GOAL AUTO-CAPTURE (unchanged)
                     # ------------------------------------------------------------
-                    if (not goal0) and (not st_goal0) and (bs0 != "active") and (not looks_like_command) and (not is_question) and (not greeting_only) and (10 <= len(msg0) <= 420) and (not (_is_couples_user(user) and str(current_project_full or "").replace(" ", "_").lower().endswith("/couples_therapy"))):
+                    if (not goal0) and (not st_goal0) and (bs0 != "active") and (not looks_like_command) and (not is_question) and (10 <= len(msg0) <= 420) and (not (_is_couples_user(user) and str(current_project_full or "").replace(" ", "_").lower().endswith("/couples_therapy"))):
                         # Write manifest goal (source used by switch messaging)
                         try:
                             m0["goal"] = msg0
@@ -14995,7 +12624,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             ef_status = ""
                             if isinstance(ef, dict):
                                 ef_status = str(ef.get("status") or "").strip().lower()
-                            if (not is_health_hat) and ((not isinstance(ef, dict)) or ef_status in ("", "proposed", "draft", "suggested")):
+                            if (not isinstance(ef, dict)) or ef_status in ("", "proposed", "draft", "suggested"):
                                 stx["expert_frame"] = {
                                     "status": "locked",
                                     "label": "General Project Operator",
@@ -15024,23 +12653,22 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         # SUPERHUMAN PACING:
                         # For brand-new projects, keep the first follow-up question generic and ChatGPT-like.
                         # If the user explicitly wants "a chat like chatgpt", do not ask deliverable/audience questions.
-                        if not suppress_bootstrap_prompts:
-                            low_goal = msg0.lower().strip()
+                        low_goal = msg0.lower().strip()
 
-                            if "chatgpt" in low_goal or "chat gpt" in low_goal or "chat like" in low_goal:
-                                steer = (
-                                    "Got it - we'll keep this like ChatGPT.\n\n"
-                                    "What do you want to talk about or do first?"
-                                )
-                            else:
-                                steer = (
-                                    f"Got it - **{msg0}**.\n\n"
-                                    "What should we do first in this project?"
-                                )
+                        if "chatgpt" in low_goal or "chat gpt" in low_goal or "chat like" in low_goal:
+                            steer = (
+                                "Got it — we’ll keep this like ChatGPT.\n\n"
+                                "What do you want to talk about or do first?"
+                            )
+                        else:
+                            steer = (
+                                f"Got it — **{msg0}**.\n\n"
+                                "What should we do first in this project?"
+                            )
 
-                            await websocket.send(steer)
-                            last_full_answer_text = steer
-                            continue
+                        await websocket.send(steer)
+                        last_full_answer_text = steer
+                        continue
             except Exception:
                 pass
 
@@ -15714,16 +13342,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     _user_text_for_search = str(resolved_frame.get("user_text_for_search") or clean_user_msg or "").strip()
                 except Exception:
                     _user_text_for_search = (clean_user_msg or "").strip()
-                try:
-                    _TRACE.span(
-                        trace_id,
-                        "tool.route",
-                        current_project,
-                        detail={"tool": "none", "reason": "explicit_nosearch"},
-                        conn_id=conn_id,
-                    )
-                except Exception:
-                    pass
 
             elif lower.startswith("[search]"):
                 do_search = True
@@ -15745,16 +13363,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 qtext = _pick_search_query(_user_text_for_search)
                 search_results = brave_search(qtext, count=(12 if deep_search else 7))
                 search_results = _mark_search_evidence_insufficient(search_results, qtext)
-                try:
-                    _TRACE.span(
-                        trace_id,
-                        "tool.route",
-                        current_project,
-                        detail={"tool": "web", "reason": "explicit_search_tag"},
-                        conn_id=conn_id,
-                    )
-                except Exception:
-                    pass
 
 
             else:
@@ -15822,16 +13430,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
                 if picture_request:
                     do_search = True
-                    try:
-                        _TRACE.span(
-                            trace_id,
-                            "tool.route",
-                            current_project,
-                            detail={"tool": "image_search", "reason": "picture_request"},
-                            conn_id=conn_id,
-                        )
-                    except Exception:
-                        pass
 
                     # Determine what to search for:
                     # - Prefer "X" from "picture of X"
@@ -15856,16 +13454,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     if not q_img:
                         # No robot talk: ask one human clarifier, then stop this turn.
                         await websocket.send("Sure — a picture of what?")
-                        try:
-                            _TRACE.span(
-                                trace_id,
-                                "tool.route",
-                                current_project,
-                                detail={"tool": "image_search", "reason": "missing_query"},
-                                conn_id=conn_id,
-                            )
-                        except Exception:
-                            pass
                         continue
 
                     # Run bounded image search (max 3) and send directly.
@@ -15958,16 +13546,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     if "NO_RESULTS" in (img_block or "") or "Search error" in (img_block or ""):
                         # Fall back to normal web search if images fail (still bounded).
                         qtext_used_for_search = (q_img or "").strip()
-                        try:
-                            _TRACE.span(
-                                trace_id,
-                                "tool.route",
-                                current_project,
-                                detail={"tool": "web", "reason": "image_fallback"},
-                                conn_id=conn_id,
-                            )
-                        except Exception:
-                            pass
                         search_results = brave_search(q_img, count=7)
                         search_results = _mark_search_evidence_insufficient(search_results, q_img)
 
@@ -16006,28 +13584,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     intent_norm_for_search = ""
                     ws_rel_used_for_search = ""                    
                     qtext = strip_lens0_system_blocks(clean_user_msg)
-                    # Health context: force live evidence and sanitize query to avoid personal identifiers.
-                    health_force_search = False
-                    try:
-                        ae = str(active_expert or "").strip().lower()
-                        if ae == "writing":
-                            ae = "health"
-                        health_force_search = (ae == "health") or _looks_like_health_query(clean_user_msg)
-                    except Exception:
-                        health_force_search = False
-                    if health_force_search:
-                        # Inject minimal, non-identifying health context into the search query
-                        try:
-                            hctx = _build_health_search_context(project_full=current_project_full)
-                        except Exception:
-                            hctx = ""
-                        if hctx:
-                            qtext = (str(_user_text_for_search or qtext or "").strip() + " " + hctx).strip()
-                        else:
-                            qtext = (_user_text_for_search or qtext)
-                        qtext = _health_sanitize_search_query(qtext or "")
-                        # Health requests should prefer broader evidence.
-                        deep_search = True
                     # Deterministic guard: avoid web search for personal memory claims
                     # (names, birthdays, relationship facts). These should be handled by memory, not lookup.
                     personal_memory_claim = False
@@ -16046,15 +13602,11 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     # Preflight intent classification (LLM owns meaning).
                     # If classifier says "lookup", we allow web search for this turn (unless [NOSEARCH] forced earlier).
                     try:
-                        if PREFLIGHT_INTENT_ENABLED:
-                            intent_obj_for_search = await model_pipeline.classify_intent_c6(
-                                ctx=sys.modules[__name__],
-                                user_text=(qtext or "").strip(),
-                            )
-                            intent_norm_for_search = str(intent_obj_for_search.get("intent") or "").strip().lower()
-                        else:
-                            intent_obj_for_search = {}
-                            intent_norm_for_search = ""
+                        intent_obj_for_search = await model_pipeline.classify_intent_c6(
+                            ctx=sys.modules[__name__],
+                            user_text=(qtext or "").strip(),
+                        )
+                        intent_norm_for_search = str(intent_obj_for_search.get("intent") or "").strip().lower()
                     except Exception:
                         intent_obj_for_search = {}
                         intent_norm_for_search = ""
@@ -16070,42 +13622,19 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     verify_first = False
                     claim_class = "other"                    
                     try:
-                        should_run_needs = False
-                        if PREFLIGHT_NEEDS_WORLD_MODE == "always":
-                            should_run_needs = True
-                        elif PREFLIGHT_NEEDS_WORLD_MODE == "auto":
-                            try:
-                                qlow2 = (qtext or "").strip().lower()
-                                looks_like_q = bool(
-                                    qlow2.endswith("?")
-                                    or re.match(r"^(what|who|when|where|why|how)\b", qlow2)
-                                )
-                                should_run_needs = bool(looks_like_q or should_auto_web_search(qtext))
-                            except Exception:
-                                should_run_needs = False
-                        # PREFLIGHT_NEEDS_WORLD_MODE == "off" => skip
-
-                        if should_run_needs:
-                            needs_obj = await classify_needs_world_evidence(
-                                ctx=sys.modules[__name__],
-                                user_text=(qtext or "").strip(),
-                            )
-                            needs_world = bool(needs_obj.get("needs_world_evidence") is True)
-                            verify_first = bool(needs_obj.get("verify_first") is True)
-                            claim_class = str(needs_obj.get("claim_class") or "").strip().lower()
-                            if claim_class not in ("timeless", "current_event", "viral_claim", "procedure_legal", "other"):
-                                claim_class = "other"
-                            needs_conf = str(needs_obj.get("confidence") or "low").strip().lower()
-                            if needs_conf not in ("low", "medium", "high"):
-                                needs_conf = "low"
-                            needs_reason = str(needs_obj.get("reason") or "").strip()
-                        else:
-                            needs_obj = {}
-                            needs_world = False
-                            verify_first = False
-                            claim_class = "other"
-                            needs_reason = ""
+                        needs_obj = await classify_needs_world_evidence(
+                            ctx=sys.modules[__name__],
+                            user_text=(qtext or "").strip(),
+                        )
+                        needs_world = bool(needs_obj.get("needs_world_evidence") is True)
+                        verify_first = bool(needs_obj.get("verify_first") is True)
+                        claim_class = str(needs_obj.get("claim_class") or "").strip().lower()
+                        if claim_class not in ("timeless", "current_event", "viral_claim", "procedure_legal", "other"):
+                            claim_class = "other"                        
+                        needs_conf = str(needs_obj.get("confidence") or "low").strip().lower()
+                        if needs_conf not in ("low", "medium", "high"):
                             needs_conf = "low"
+                        needs_reason = str(needs_obj.get("reason") or "").strip()
                     except Exception:
                         needs_obj = {}
                         needs_world = False
@@ -16180,10 +13709,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     if personal_memory_claim:
                         allow_web_search = False
 
-                    # Health hat: always allow web search unless explicitly disabled.
-                    if health_force_search and (search_route_mode != "nosearch") and (not personal_memory_claim):
-                        allow_web_search = True
-
                     # AUDIT_CTX: record intent + world-evidence decision (authoritative reasons)
                     try:
                         _audit_ctx_set("intent.intent_norm", str(intent_norm_for_search or ""))
@@ -16201,9 +13726,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         _audit_ctx_set("search.route_mode", str(search_route_mode or ""))
                         _audit_ctx_set("search.query_text", str(qtext or "").strip())
                         if bool(allow_web_search):
-                            if health_force_search and (search_route_mode != "nosearch"):
-                                _audit_ctx_set("search.reason", "health_hat_live_evidence")
-                            elif bool(needs_world or verify_first):
+                            if bool(needs_world or verify_first):
                                 _audit_ctx_set("search.reason", "needs_world_evidence_override")
                             elif (intent_norm_for_search == "lookup") and (not _is_generic_search_query(str(qtext or "").strip())):
                                 _audit_ctx_set("search.reason", "llm_lookup_bound_followup_or_heuristic")
@@ -16216,28 +13739,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 _audit_ctx_set("search.reason", f"not_lookup(intent={intent_norm_for_search})")
                             else:
                                 _audit_ctx_set("search.reason", "intent_unknown_or_blocked")
-                    except Exception:
-                        pass
-                    try:
-                        route_tool = "web" if bool(allow_web_search) and (not personal_memory_claim) else "none"
-                        if bool(allow_web_search) and (not personal_memory_claim):
-                            if health_force_search and (search_route_mode != "nosearch"):
-                                route_reason = "health_hat_live_evidence"
-                            elif bool(needs_world or verify_first):
-                                route_reason = "needs_world_evidence_override"
-                            elif intent_norm_for_search == "lookup":
-                                route_reason = "intent_lookup"
-                            else:
-                                route_reason = "heuristic_auto_web_search"
-                        else:
-                            route_reason = "blocked_or_not_needed"
-                        _TRACE.span(
-                            trace_id,
-                            "tool.route",
-                            current_project,
-                            detail={"tool": route_tool, "reason": route_reason},
-                            conn_id=conn_id,
-                        )
                     except Exception:
                         pass
                     # Single authoritative auto-search heuristic (no phrase lists).
@@ -16598,25 +14099,9 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 msg0 = (clean_user_msg or "").strip()
                 low0 = msg0.lower().strip()
 
-                greeting_only = low0 in (
-                    "hi",
-                    "hello",
-                    "hey",
-                    "yo",
-                    "hiya",
-                    "howdy",
-                    "sup",
-                    "good morning",
-                    "good afternoon",
-                    "good evening",
-                    "good night",
-                    "morning",
-                    "evening",
-                    "gm",
-                    "gn",
-                )
+                greeting_only = low0 in ("hi", "hello", "hey", "yo", "hiya", "howdy", "sup")
 
-                if (not suppress_bootstrap_prompts) and greeting_only and (not _is_couples_user(user)):
+                if greeting_only and (not _is_couples_user(user)):
                     try:
                         m0 = load_manifest(current_project_full) or {}
                     except Exception:
@@ -16816,7 +14301,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     search_cached=bool(search_cached),
                     thread_synthesis_text=thread_synthesis_for_turn,
                     active_expert=active_expert,
-                    preflight_intent=(intent_obj_for_search if PREFLIGHT_INTENT_ENABLED else None),
                 )
                 # Update thread synthesis cache from current evidence (ephemeral)
                 try:
@@ -16859,37 +14343,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     pass
 
                 user_answer = str(result.get("user_answer") or "").strip()
-                # Health personalization guard (server-side): ensure profile grounding is explicit.
-                try:
-                    ae = str(active_expert or "").strip().lower()
-                    if ae == "writing":
-                        ae = "health"
-                    health_context = (ae == "health") or _looks_like_health_query(clean_user_msg)
-                    if health_context:
-                        prof = project_store.load_health_profile(current_project_full) or {}
-                        age = None
-                        try:
-                            user_seg = str(current_project_full or "").split("/", 1)[0].strip()
-                        except Exception:
-                            user_seg = ""
-                        try:
-                            if user_seg:
-                                gp = project_store.load_user_profile(user_seg)
-                                age = (gp.get("derived") or {}).get("age_years")
-                        except Exception:
-                            age = None
-                        line = ""
-                        try:
-                            line = str(model_pipeline._health_build_personalization_line(prof, age_years=age if isinstance(age, int) else None) or "").strip()
-                        except Exception:
-                            line = ""
-                        if line:
-                            low_ans = user_answer.lower()
-                            already = ("lisinopril" in low_ans) or ("allerg" in low_ans) or ("weight" in low_ans) or ("lb" in low_ans) or ("kg" in low_ans)
-                            if not already:
-                                user_answer = (line + "\n\n" + user_answer).strip()
-                except Exception:
-                    pass
                 if upload_notice:
                     user_answer = (upload_notice + "\n\n" + user_answer).strip()
                 lookup_mode = bool(result.get("lookup_mode") or False)

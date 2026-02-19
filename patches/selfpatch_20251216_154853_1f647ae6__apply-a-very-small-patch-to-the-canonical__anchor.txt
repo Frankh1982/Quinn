@@ -1,0 +1,16 @@
+Replace from this exact line:     greet.append("Lens-0 Project OS server connected.")
+Through this exact line:     await websocket.send("\n".join(greet))
+With this code:
+```python
+    greet.append("[GREEN ACTIVE] Lens-0 Project OS server connected.")
+    greet.append(f"Current project for this connection: {current_project}")
+    greet.append(f"Current project goal: {_get_project_goal(current_project) or '(no goal set yet)'}")
+    if projects:
+        greet.append("Existing projects:")
+        for i, name in enumerate(projects, start=1):
+            mark = " (current)" if name == current_project else ""
+            greet.append(f"  {i}) {name}{mark}")
+    greet.append("")
+    greet.append(build_project_dashboard_message(current_project))
+    await websocket.send("\n".join(greet))
+```

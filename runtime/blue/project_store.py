@@ -17,17 +17,11 @@ Does NOT contain:
 from __future__ import annotations
 
 import hashlib
-import inspect
 import html
 import json
 import os
 import re
 import time
-from datetime import datetime
-try:
-    from zoneinfo import ZoneInfo  # py3.9+
-except Exception:
-    ZoneInfo = None  # type: ignore
 import zipfile
 import shutil
 import subprocess
@@ -36,8 +30,6 @@ from io import BytesIO
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
-from path_engine import now_iso
 
 import path_engine
 
@@ -116,11 +108,9 @@ USER_GLOBAL_FACTS_MAP_FILE_NAME = "global_facts_map.json"
 USER_PENDING_DISAMBIGUATION_FILE_NAME = "pending_disambiguation.json"
 USER_PENDING_PROFILE_QUESTION_FILE_NAME = "pending_profile_question.json"
 COUPLES_SHARED_MEMORY_FILE_NAME = "couples_shared_memory.json"
-HEALTH_PROFILE_FILE_NAME = "health_profile.json"
-EXPERTS_DIR_NAME = "experts"
 DISCOVERY_INDEX_FILE_NAME = "discovery_index.jsonl"
 FACT_LEDGER_FILE_NAME = "fact_ledger.jsonl"
-ANALYSIS_PIPELINE_VERSION = "analysis_v4"
+ANALYSIS_PIPELINE_VERSION = "analysis_v3"
 INGEST_PIPELINE_VERSION = "ingest_v2"
 CAPABILITY_GAPS_FILE_NAME = "capability_gaps.jsonl"
 UPLOAD_BATCH_STATE_FILE_NAME = "upload_batches.json"
@@ -175,1057 +165,6 @@ def user_pending_profile_question_path(user: str) -> Path:
 def couples_shared_memory_path(project_name: str) -> Path:
     # projects/<user>/<project>/state/couples_shared_memory.json
     return state_dir(project_name) / COUPLES_SHARED_MEMORY_FILE_NAME
-
-def health_profile_path(project_name: str) -> Path:
-    # Legacy: projects/<user>/<project>/state/health_profile.json
-    return state_dir(project_name) / HEALTH_PROFILE_FILE_NAME
-
-def experts_dir(user: str) -> Path:
-    # projects/<user>/_user/experts
-    d = user_dir(user) / EXPERTS_DIR_NAME
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-def expert_profile_path(user: str, expert: str) -> Path:
-    # projects/<user>/_user/experts/<expert>_profile.json
-    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", (expert or "").strip().lower()) or "expert"
-    return experts_dir(user) / f"{safe}_profile.json"
-
-def health_profile_global_path(user: str) -> Path:
-    # projects/<user>/_user/experts/health_profile.json
-    return experts_dir(user) / HEALTH_PROFILE_FILE_NAME
-
-def _default_health_profile() -> Dict[str, Any]:
-    return {
-        "schema": "health_profile_v1",
-        "updated_at": now_iso(),
-        "medications": [],
-        "allergies": [],
-        "measurements": {},
-        "labs": [],
-        "lab_refresh_manifest_at": 0.0,
-        "notes": [],
-    }
-
-def _default_expert_profile(expert: str) -> Dict[str, Any]:
-    return {
-        "schema": "expert_profile_v1",
-        "expert": str(expert or "").strip().lower() or "expert",
-        "updated_at": now_iso(),
-        "data": {},
-    }
-
-def _ensure_expert_profiles(user_seg: str) -> None:
-    if not user_seg:
-        return
-    try:
-        # Health (active)
-        p_health = health_profile_global_path(user_seg)
-        if not p_health.exists():
-            atomic_write_text(p_health, json.dumps(_default_health_profile(), indent=2, sort_keys=True))
-    except Exception:
-        pass
-
-    # Scaffolds for other hats (inactive for now)
-    for ex in ("therapist", "coding", "analysis", "general"):
-        try:
-            p = expert_profile_path(user_seg, ex)
-            if p.exists():
-                continue
-            atomic_write_text(p, json.dumps(_default_expert_profile(ex), indent=2, sort_keys=True))
-        except Exception:
-            pass
-
-def _project_user_segment(project_name: str) -> str:
-    try:
-        return str(project_name or "").split("/", 1)[0].strip()
-    except Exception:
-        return ""
-
-def load_health_profile(project_name: str) -> Dict[str, Any]:
-    ensure_project_scaffold(project_name)
-    user_seg = _project_user_segment(project_name)
-    p_global = health_profile_global_path(user_seg) if user_seg else None
-    obj = _load_json_obj(p_global) if p_global else {}
-    if not isinstance(obj, dict) or obj.get("schema") != "health_profile_v1":
-        # Legacy fallback: project-scoped health_profile.json
-        p_legacy = health_profile_path(project_name)
-        obj = _load_json_obj(p_legacy)
-        if isinstance(obj, dict) and obj.get("schema") == "health_profile_v1":
-            # Migrate forward to global store (non-destructive)
-            try:
-                if p_global is not None:
-                    atomic_write_text(p_global, json.dumps(obj, indent=2, sort_keys=True))
-            except Exception:
-                pass
-        else:
-            obj = _default_health_profile()
-            try:
-                if p_global is not None:
-                    atomic_write_text(p_global, json.dumps(obj, indent=2, sort_keys=True))
-                else:
-                    atomic_write_text(p_legacy, json.dumps(obj, indent=2, sort_keys=True))
-            except Exception:
-                pass
-    obj["updated_at"] = now_iso()
-    return obj
-
-def _write_health_profile(project_name: str, obj: Dict[str, Any]) -> bool:
-    try:
-        out = obj if isinstance(obj, dict) else _default_health_profile()
-        out.setdefault("schema", "health_profile_v1")
-        out["updated_at"] = now_iso()
-        user_seg = _project_user_segment(project_name)
-        if user_seg:
-            atomic_write_text(health_profile_global_path(user_seg), json.dumps(out, indent=2, sort_keys=True))
-        else:
-            atomic_write_text(health_profile_path(project_name), json.dumps(out, indent=2, sort_keys=True))
-        return True
-    except Exception:
-        return False
-
-def _health_norm_med_name(name: str) -> str:
-    n = re.sub(r"[^a-zA-Z0-9\s\-]", " ", (name or "").strip().lower())
-    n = re.sub(r"\s+", " ", n).strip()
-    return n
-
-def _health_allergy_is_none(rec: Dict[str, Any]) -> bool:
-    try:
-        nm = str(rec.get("name") or "").strip().lower()
-        st = str(rec.get("status") or "").strip().lower()
-    except Exception:
-        return False
-    if st in ("none", "no", "none_reported"):
-        return True
-    return "no known" in nm or nm == "none"
-
-def _health_med_name_is_malformed(name: str) -> bool:
-    low = str(name or "").strip().lower()
-    if not low:
-        return True
-    bad_tokens = ("user", "takes", "every night", "every morning", "before bed", "after bed", "nightly")
-    return any(t in low for t in bad_tokens)
-
-_HEALTH_LAB_UNIT_RE = re.compile(
-    r"\b(%|mg/dl|mmol/l|g/dl|ng/ml|ug/ml|miu/l|miu/ml|uiu/l|uiu/ml|iu/l|u/l|meq/l|pg/ml|ng/dl|mmhg|k/ul|10\^3/ul|x10\^3/ul|10\^9/l|cells/ul)\b",
-    re.IGNORECASE,
-)
-_HEALTH_LAB_LINE_RE = re.compile(
-    r"(?P<name>[A-Za-z][A-Za-z0-9\s\-/()%]{2,60})\s*[:\-]?\s*"
-    r"(?P<val>-?\d+(?:\.\d+)?)\s*(?P<unit>%|mg/dl|mmol/l|g/dl|ng/ml|ug/ml|miu/l|iu/l|u/l|meq/l|pg/ml|ng/dl|mmhg|k/ul|10\^3/ul|x10\^3/ul|10\^9/l|cells/ul)\b",
-    re.IGNORECASE,
-)
-_HEALTH_DATE_RE = re.compile(r"\b(20\d{2}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}/\d{1,2}/20\d{2})\b")
-_HEALTH_LAB_PARSER_VERSION = 2
-def _health_lab_name_is_noise(name: str) -> bool:
-    low = str(name or "").strip().lower()
-    if not low:
-        return True
-    if low.startswith("("):
-        return True
-    noise_terms = (
-        "desirable range",
-        "reference range",
-        "goal of",
-        "treating to",
-        "factor",
-        "interpret",
-        "comment",
-        "note:",
-        "ldl-c of",
-        "non-hdl-c goal",
-        "range is",
-    )
-    return any(t in low for t in noise_terms)
-
-
-def _health_parse_lab_line(ln: str) -> Optional[Dict[str, str]]:
-    s = (ln or "").strip()
-    if not s:
-        return None
-    if len(s) > 180:
-        s = s[:180].rstrip()
-    if not _HEALTH_LAB_UNIT_RE.search(s):
-        return None
-
-    # Prefer unit-aware parsing (handles "GLUCOSE 80 65-99 mg/dL" style)
-    unit_m = None
-    try:
-        for m0 in _HEALTH_LAB_UNIT_RE.finditer(s):
-            unit_m = m0
-    except Exception:
-        unit_m = None
-
-    name = ""
-    val = ""
-    unit = ""
-    ref = ""
-
-    if unit_m is not None:
-        unit = str(unit_m.group(1) or "").strip()
-        before = s[:unit_m.start()].strip()
-        after = s[unit_m.end():].strip()
-
-        # Value token: must be standalone (whitespace-bound) to avoid "B12" or "3rd"
-        mval = re.search(r"(?:^|\s)([<>]=?\s*)?(\d+(?:\.\d+)?)(?=\s|$)", before)
-        if mval:
-            val = (str(mval.group(1) or "") + str(mval.group(2) or "")).replace(" ", "")
-            name = before[:mval.start()].strip(" :;-")
-            rest = before[mval.end():].strip()
-
-            # Reference range/comparator: search remaining text or trailing tail
-            def _pick_ref(*parts: str) -> str:
-                for part in parts:
-                    if not part:
-                        continue
-                    mref = re.search(
-                        r"([<>]=?\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:-|to)\s*\d+(?:\.\d+)?)",
-                        part,
-                    )
-                    if mref:
-                        return mref.group(1).strip()
-                return ""
-
-            ref = _pick_ref(rest, after)
-
-    # Fallback to legacy regex if unit-aware parse failed
-    if not (name and val and unit):
-        m = _HEALTH_LAB_LINE_RE.search(s)
-        if not m:
-            return None
-        name = str(m.group("name") or "").strip()
-        val = str(m.group("val") or "").strip()
-        unit = str(m.group("unit") or "").strip()
-        if not name or not val:
-            return None
-        # Trim trailing clutter from name
-        name = re.sub(r"\s{2,}", " ", name).strip()
-        name = re.sub(r"\s*(result|value)$", "", name, flags=re.IGNORECASE).strip()
-        if len(name) < 3:
-            return None
-        ref = ""
-        try:
-            tail = s[m.end():]
-            mref = re.search(r"(\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:to|-)\s*\d+(?:\.\d+)?)", tail)
-            if mref:
-                ref = mref.group(1).strip()
-        except Exception:
-            ref = ""
-
-    if not name or not val or not unit:
-        return None
-    # Normalize name
-    name = re.sub(r"\s{2,}", " ", name).strip()
-    name = re.sub(r"\s*(result|value)$", "", name, flags=re.IGNORECASE).strip()
-    if len(name) < 3:
-        return None
-    if _health_lab_name_is_noise(name):
-        return None
-    date = ""
-    try:
-        md = _HEALTH_DATE_RE.search(s)
-        if md:
-            date = md.group(1).strip()
-    except Exception:
-        date = ""
-    return {
-        "name": name,
-        "value": val,
-        "unit": unit,
-        "ref": ref,
-        "date": date,
-        "raw": s,
-    }
-
-
-def _health_extract_labs_from_excel_blueprint(
-    *,
-    canonical_rel: str,
-    blueprint_obj: Dict[str, Any],
-    max_items: int,
-) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    if not isinstance(blueprint_obj, dict):
-        return out
-
-    def _emit(sheet: str, cell: str, label: str, value: Any) -> None:
-        nonlocal out
-        if len(out) >= int(max_items or 0):
-            return
-        if not label:
-            return
-        v = None
-        if isinstance(value, (int, float)):
-            v = str(value)
-        elif isinstance(value, str):
-            v = value.strip()
-        if not v:
-            return
-        # Try to pick unit from label
-        unit = ""
-        m = _HEALTH_LAB_UNIT_RE.search(label)
-        if m:
-            unit = m.group(1)
-        lab = {
-            "name": label.strip(),
-            "value": v.strip(),
-            "unit": unit,
-            "ref": "",
-            "date": "",
-            "source_file": canonical_rel,
-            "source_hint": f"{sheet}!{cell}",
-        }
-        out.append(lab)
-
-    cv = blueprint_obj.get("cached_values")
-    if isinstance(cv, list):
-        for row in cv:
-            if len(out) >= int(max_items or 0):
-                break
-            if not isinstance(row, dict):
-                continue
-            sh = str(row.get("sheet") or "").strip()
-            ce = str(row.get("cell") or "").strip()
-            if not sh or not ce:
-                continue
-            lab = str(row.get("label") or row.get("name") or "").strip()
-            _emit(sh, ce, lab, row.get("value"))
-
-    cells = blueprint_obj.get("cells")
-    if isinstance(cells, list) and len(out) < int(max_items or 0):
-        for row in cells:
-            if len(out) >= int(max_items or 0):
-                break
-            if not isinstance(row, dict):
-                continue
-            sh = str(row.get("sheet") or "").strip()
-            ce = str(row.get("cell") or "").strip()
-            if not sh or not ce:
-                continue
-            lab = str(row.get("label") or row.get("name") or "").strip()
-            _emit(sh, ce, lab, row.get("value"))
-
-    nr = blueprint_obj.get("named_ranges")
-    if isinstance(nr, list) and len(out) < int(max_items or 0):
-        for row in nr:
-            if len(out) >= int(max_items or 0):
-                break
-            if not isinstance(row, dict):
-                continue
-            sh = str(row.get("sheet") or "").strip()
-            ce = str(row.get("cell") or "").strip()
-            if not sh or not ce:
-                continue
-            lab = str(row.get("name") or "").strip()
-            _emit(sh, ce, lab, row.get("value"))
-
-    return out
-
-def refresh_health_profile_from_artifacts(
-    project_name: str,
-    *,
-    max_items_per_file: int = 120,
-    max_total_items: int = 600,
-) -> Dict[str, Any]:
-    """
-    Deterministic lab extraction into health_profile.json.
-    Uses existing artifacts (pdf_text, ocr_text, excel_blueprint, doc_text).
-    """
-    ensure_project_scaffold(project_name)
-
-    prof = load_health_profile(project_name)
-    m = load_manifest(project_name)
-    try:
-        man_updated = float(m.get("updated_at") or 0.0)
-    except Exception:
-        man_updated = 0.0
-    try:
-        last_refresh = float(prof.get("lab_refresh_manifest_at") or 0.0)
-    except Exception:
-        last_refresh = 0.0
-
-    # Heuristic: re-run if existing labs look malformed (e.g., name contains value+range)
-    force_refresh = False
-    try:
-        labs0 = prof.get("labs") if isinstance(prof, dict) else []
-        if isinstance(labs0, list):
-            for it in labs0:
-                if not isinstance(it, dict):
-                    continue
-                nm = str(it.get("name") or "")
-                if re.search(r"\b\d+\s+\d", nm) or _health_lab_name_is_noise(nm):
-                    force_refresh = True
-                    break
-    except Exception:
-        force_refresh = False
-
-    try:
-        parser_version = int(prof.get("lab_parser_version") or 0)
-    except Exception:
-        parser_version = 0
-
-    if man_updated and (last_refresh >= man_updated) and (parser_version >= _HEALTH_LAB_PARSER_VERSION) and (not force_refresh):
-        return prof
-
-    raw_files = m.get("raw_files") or []
-    if not isinstance(raw_files, list):
-        raw_files = []
-
-    all_labs: List[Dict[str, Any]] = []
-
-    from model_pipeline import _health_extract_labs_from_text as _mp_health_extract_labs_from_text
-
-    for rf in raw_files:
-        if len(all_labs) >= int(max_total_items or 0):
-            break
-        if not isinstance(rf, dict):
-            continue
-        canonical_rel = str(rf.get("path") or "").replace("\\", "/").strip()
-        if not canonical_rel:
-            continue
-        suf = Path(canonical_rel).suffix.lower()
-
-        # Excel -> parse blueprint
-        if suf in (".xlsx", ".xlsm", ".xls"):
-            a = _find_latest_artifact_for_file(project_name, artifact_type="excel_blueprint", canonical_rel=canonical_rel)
-            if isinstance(a, dict):
-                txt = read_artifact_text(project_name, a, cap_chars=220000).strip()
-                try:
-                    obj = json.loads(txt) if txt else {}
-                except Exception:
-                    obj = {}
-                labs = _health_extract_labs_from_excel_blueprint(
-                    canonical_rel=canonical_rel,
-                    blueprint_obj=(obj if isinstance(obj, dict) else {}),
-                    max_items=int(max_items_per_file or 0),
-                )
-                all_labs.extend(labs)
-            continue
-
-        # PDF -> parse pdf_text
-        if suf == ".pdf":
-            a = _find_latest_artifact_for_file(project_name, artifact_type="pdf_text", canonical_rel=canonical_rel)
-            if isinstance(a, dict):
-                txt = read_artifact_text(project_name, a, cap_chars=220000).strip()
-                page = 1
-                line_in_page = 0
-                for raw_ln in (txt or "").splitlines():
-                    if len(all_labs) >= int(max_total_items or 0):
-                        break
-                    ln = (raw_ln or "").strip()
-                    if not ln:
-                        continue
-                    mpage = re.match(r"^\[PAGE\s+(\d+)\]\s*$", ln, flags=re.IGNORECASE)
-                    if mpage:
-                        try:
-                            page = int(mpage.group(1))
-                        except Exception:
-                            page = page
-                        line_in_page = 0
-                        continue
-                    line_in_page += 1
-                    labs = _mp_health_extract_labs_from_text(ln)
-                    for lab in (labs or [])[:1]:
-                        if not isinstance(lab, dict):
-                            continue
-                        lab2 = dict(lab)
-                        lab2["source_file"] = canonical_rel
-                        lab2["source_hint"] = f"page {page}: line {line_in_page}"
-                        all_labs.append(lab2)
-            continue
-
-        # Image -> parse ocr_text
-        if suf in IMAGE_SUFFIXES:
-            a = _find_latest_artifact_for_file(project_name, artifact_type="ocr_text", canonical_rel=canonical_rel)
-            if isinstance(a, dict):
-                txt = read_artifact_text(project_name, a, cap_chars=220000).strip()
-                line_no = 0
-                for raw_ln in (txt or "").splitlines():
-                    if len(all_labs) >= int(max_total_items or 0):
-                        break
-                    ln = (raw_ln or "").strip()
-                    if not ln:
-                        continue
-                    line_no += 1
-                    labs = _mp_health_extract_labs_from_text(ln)
-                    for lab in (labs or [])[:1]:
-                        if not isinstance(lab, dict):
-                            continue
-                        lab2 = dict(lab)
-                        lab2["source_file"] = canonical_rel
-                        lab2["source_hint"] = f"ocr line {line_no}"
-                        all_labs.append(lab2)
-            continue
-
-        # DOC/DOCX -> parse doc_text if present
-        if suf in (".doc", ".docx"):
-            a = _find_latest_artifact_for_file(project_name, artifact_type="doc_text", canonical_rel=canonical_rel)
-            if isinstance(a, dict):
-                txt = read_artifact_text(project_name, a, cap_chars=220000).strip()
-                line_no = 0
-                for raw_ln in (txt or "").splitlines():
-                    if len(all_labs) >= int(max_total_items or 0):
-                        break
-                    ln = (raw_ln or "").strip()
-                    if not ln:
-                        continue
-                    line_no += 1
-                    labs = _mp_health_extract_labs_from_text(ln)
-                    for lab in (labs or [])[:1]:
-                        if not isinstance(lab, dict):
-                            continue
-                        lab2 = dict(lab)
-                        lab2["source_file"] = canonical_rel
-                        lab2["source_hint"] = f"line {line_no}"
-                        all_labs.append(lab2)
-            continue
-
-    # Merge into profile (latest wins per name+unit)
-    try:
-        prof = update_health_profile(project_name, labs=all_labs, replace_labs=True, source_excerpt="", source_turn=0, timestamp=now_iso())
-    except Exception:
-        prof = load_health_profile(project_name)
-
-    try:
-        prof["lab_refresh_manifest_at"] = float(man_updated or 0.0)
-        prof["lab_parser_version"] = int(_HEALTH_LAB_PARSER_VERSION)
-        _write_health_profile(project_name, prof)
-    except Exception:
-        pass
-
-    return prof
-
-def update_health_profile(
-    project_name: str,
-    *,
-    meds: Optional[List[Dict[str, Any]]] = None,
-    allergies: Optional[List[Dict[str, Any]]] = None,
-    weight: Optional[Dict[str, Any]] = None,
-    labs: Optional[List[Dict[str, Any]]] = None,
-    replace_labs: bool = False,
-    source_turn: int = 0,
-    source_excerpt: str = "",
-    timestamp: str = "",
-) -> Dict[str, Any]:
-    """
-    Deterministic health memory update (global expert store).
-    - meds: [{name, dose, dose_unit, frequency, route, status, raw}]
-    - allergies: [{name, reaction, status, raw}]
-    - weight: {value, unit}
-    """
-    prof = load_health_profile(project_name)
-    meds_list = prof.get("medications")
-    if not isinstance(meds_list, list):
-        meds_list = []
-        prof["medications"] = meds_list
-    else:
-        # Clean malformed promoted entries
-        try:
-            meds_list = [
-                m for m in meds_list
-                if not (
-                    isinstance(m, dict)
-                    and _health_med_name_is_malformed(str(m.get("name") or ""))
-                    and str(m.get("source_excerpt") or "") == "promoted_from_global_facts"
-                )
-            ]
-            prof["medications"] = meds_list
-        except Exception:
-            pass
-
-    idx: Dict[str, int] = {}
-    for i, m in enumerate(meds_list):
-        if not isinstance(m, dict):
-            continue
-        nm = _health_norm_med_name(str(m.get("name") or ""))
-        if nm:
-            idx[nm] = i
-
-    ts = (timestamp or "").strip() or now_iso()
-    excerpt = (source_excerpt or "").strip()
-
-    for m in (meds or []):
-        if not isinstance(m, dict):
-            continue
-        name = str(m.get("name") or "").strip()
-        if not name:
-            continue
-        key = _health_norm_med_name(name)
-        if not key:
-            continue
-
-        rec: Dict[str, Any] = {}
-        if key in idx:
-            try:
-                rec = meds_list[idx[key]]
-            except Exception:
-                rec = {}
-        if not isinstance(rec, dict):
-            rec = {}
-
-        rec["name"] = name
-        if str(m.get("dose") or "").strip():
-            rec["dose"] = str(m.get("dose") or "").strip()
-        if str(m.get("dose_unit") or "").strip():
-            rec["dose_unit"] = str(m.get("dose_unit") or "").strip()
-        if str(m.get("frequency") or "").strip():
-            rec["frequency"] = str(m.get("frequency") or "").strip()
-        if str(m.get("route") or "").strip():
-            rec["route"] = str(m.get("route") or "").strip()
-        if str(m.get("status") or "").strip():
-            rec["status"] = str(m.get("status") or "").strip()
-        if str(m.get("raw") or "").strip():
-            rec["raw"] = str(m.get("raw") or "").strip()
-
-        rec["last_mentioned"] = ts
-        if source_turn:
-            rec["source_turn"] = int(source_turn or 0)
-        if excerpt:
-            rec["source_excerpt"] = excerpt
-
-        if key in idx:
-            meds_list[idx[key]] = rec
-        else:
-            meds_list.append(rec)
-            idx[key] = len(meds_list) - 1
-
-    # Allergies
-    allergies_list = prof.get("allergies")
-    if not isinstance(allergies_list, list):
-        allergies_list = []
-        prof["allergies"] = allergies_list
-
-    aidx: Dict[str, int] = {}
-    for i, a in enumerate(allergies_list):
-        if not isinstance(a, dict):
-            continue
-        nm = _health_norm_med_name(str(a.get("name") or ""))
-        if nm:
-            aidx[nm] = i
-
-    for a in (allergies or []):
-        if not isinstance(a, dict):
-            continue
-        name = str(a.get("name") or "").strip()
-        if not name:
-            continue
-        key = _health_norm_med_name(name)
-        if not key:
-            continue
-
-        rec_a: Dict[str, Any] = {}
-        if key in aidx:
-            try:
-                rec_a = allergies_list[aidx[key]]
-            except Exception:
-                rec_a = {}
-        if not isinstance(rec_a, dict):
-            rec_a = {}
-
-        rec_a["name"] = name
-        if str(a.get("reaction") or "").strip():
-            rec_a["reaction"] = str(a.get("reaction") or "").strip()
-        if str(a.get("status") or "").strip():
-            rec_a["status"] = str(a.get("status") or "").strip()
-        if str(a.get("raw") or "").strip():
-            rec_a["raw"] = str(a.get("raw") or "").strip()
-
-        rec_a["last_mentioned"] = ts
-        if source_turn:
-            rec_a["source_turn"] = int(source_turn or 0)
-        if excerpt:
-            rec_a["source_excerpt"] = excerpt
-
-        # If we are adding a real allergy, remove "none" placeholders.
-        if not _health_allergy_is_none(rec_a):
-            try:
-                allergies_list = [x for x in allergies_list if not (isinstance(x, dict) and _health_allergy_is_none(x))]
-                prof["allergies"] = allergies_list
-                aidx = { _health_norm_med_name(str(x.get("name") or "")) : i for i, x in enumerate(allergies_list) if isinstance(x, dict) }
-            except Exception:
-                pass
-        else:
-            # If real allergies exist, skip "none" entry.
-            try:
-                if any(isinstance(x, dict) and not _health_allergy_is_none(x) for x in allergies_list):
-                    continue
-            except Exception:
-                pass
-
-        if key in aidx:
-            allergies_list[aidx[key]] = rec_a
-        else:
-            allergies_list.append(rec_a)
-            aidx[key] = len(allergies_list) - 1
-
-    if isinstance(weight, dict):
-        try:
-            wv = str(weight.get("value") or "").strip()
-            wu = str(weight.get("unit") or "").strip()
-            if wv and wu:
-                meas = prof.get("measurements")
-                if not isinstance(meas, dict):
-                    meas = {}
-                    prof["measurements"] = meas
-                meas["weight"] = {
-                    "value": wv,
-                    "unit": wu,
-                    "last_mentioned": ts,
-                    "source_excerpt": excerpt,
-                }
-        except Exception:
-            pass
-
-    # Labs (project-scoped; latest wins per (name, unit))
-    labs_list = prof.get("labs")
-    if replace_labs:
-        labs_list = []
-        prof["labs"] = labs_list
-    elif not isinstance(labs_list, list):
-        labs_list = []
-        prof["labs"] = labs_list
-
-    lab_idx: Dict[str, int] = {}
-    for i, it in enumerate(labs_list):
-        if not isinstance(it, dict):
-            continue
-        nm = _health_norm_med_name(str(it.get("name") or ""))
-        un = str(it.get("unit") or "").strip().lower()
-        if nm:
-            lab_idx[f"{nm}|{un}"] = i
-
-    for it in (labs or []):
-        if not isinstance(it, dict):
-            continue
-        name = str(it.get("name") or "").strip()
-        if not name:
-            continue
-        unit = str(it.get("unit") or "").strip()
-        key = f"{_health_norm_med_name(name)}|{unit.lower()}"
-        if not key.strip("|"):
-            continue
-
-        rec: Dict[str, Any] = {}
-        if key in lab_idx:
-            try:
-                rec = labs_list[lab_idx[key]]
-            except Exception:
-                rec = {}
-        if not isinstance(rec, dict):
-            rec = {}
-
-        rec["name"] = name
-        if str(it.get("value") or "").strip():
-            rec["value"] = str(it.get("value") or "").strip()
-        if unit:
-            rec["unit"] = unit
-        if str(it.get("ref") or "").strip():
-            rec["ref"] = str(it.get("ref") or "").strip()
-        if str(it.get("date") or "").strip():
-            rec["date"] = str(it.get("date") or "").strip()
-        if str(it.get("source_file") or "").strip():
-            rec["source_file"] = str(it.get("source_file") or "").strip()
-        if str(it.get("source_hint") or "").strip():
-            rec["source_hint"] = str(it.get("source_hint") or "").strip()
-
-        rec["last_mentioned"] = ts
-        if source_turn:
-            rec["source_turn"] = int(source_turn or 0)
-        if excerpt:
-            rec["source_excerpt"] = excerpt
-
-        if key in lab_idx:
-            labs_list[lab_idx[key]] = rec
-        else:
-            labs_list.append(rec)
-            lab_idx[key] = len(labs_list) - 1
-
-    _write_health_profile(project_name, prof)
-    return prof
-
-def render_health_profile_snippet(project_name: str) -> str:
-    """
-    Render a small, deterministic health memory snippet for CANONICAL_SNIPPETS.
-    """
-    try:
-        prof = load_health_profile(project_name)
-    except Exception:
-        prof = _default_health_profile()
-
-    lines: List[str] = []
-
-    # Age from global profile (derived)
-    try:
-        user_seg = str(project_name or "").split("/", 1)[0].strip()
-    except Exception:
-        user_seg = ""
-    age = None
-    try:
-        if user_seg:
-            gp = load_user_profile(user_seg)
-            age = (gp.get("derived") or {}).get("age_years")
-    except Exception:
-        age = None
-    if isinstance(age, int):
-        lines.append(f"- Age (derived): {age}")
-
-    # Weight
-    try:
-        meas = prof.get("measurements") if isinstance(prof, dict) else {}
-        w = (meas or {}).get("weight") if isinstance(meas, dict) else {}
-        wv = str((w or {}).get("value") or "").strip()
-        wu = str((w or {}).get("unit") or "").strip()
-        if wv and wu:
-            lines.append(f"- Weight: {wv} {wu}")
-        else:
-            lines.append("- Weight: (not recorded)")
-    except Exception:
-        lines.append("- Weight: (not recorded)")
-
-    # Medications
-    meds = prof.get("medications") if isinstance(prof, dict) else []
-    if not isinstance(meds, list):
-        meds = []
-    if meds:
-        lines.append("- Medications:")
-        for m in meds[:12]:
-            if not isinstance(m, dict):
-                continue
-            name = str(m.get("name") or "").strip()
-            if not name:
-                continue
-            dose = str(m.get("dose") or "").strip()
-            unit = str(m.get("dose_unit") or "").strip()
-            freq = str(m.get("frequency") or "").strip()
-            route = str(m.get("route") or "").strip()
-            status = str(m.get("status") or "").strip()
-
-            parts: List[str] = [name]
-            if dose and unit:
-                parts.append(f"{dose} {unit}")
-            elif dose:
-                parts.append(dose)
-            if freq:
-                parts.append(freq)
-            if route:
-                parts.append(route)
-            if status:
-                parts.append(f"[{status}]")
-            lines.append("  - " + " | ".join(parts))
-    else:
-        lines.append("- Medications: (not recorded yet)")
-
-    # Allergies
-    allergies = prof.get("allergies") if isinstance(prof, dict) else []
-    if not isinstance(allergies, list):
-        allergies = []
-    if allergies:
-        # If only "none" is recorded, print compactly.
-        real_allergies = [a for a in allergies if isinstance(a, dict) and not _health_allergy_is_none(a)]
-        if not real_allergies:
-            lines.append("- Allergies: None reported")
-        else:
-            lines.append("- Allergies:")
-            for a in real_allergies[:12]:
-                name = str(a.get("name") or "").strip()
-                if not name:
-                    continue
-                reaction = str(a.get("reaction") or "").strip()
-                status = str(a.get("status") or "").strip()
-                parts_a = [name]
-                if reaction:
-                    parts_a.append(reaction)
-                if status:
-                    parts_a.append(f"[{status}]")
-                lines.append("  - " + " | ".join(parts_a))
-    else:
-        lines.append("- Allergies: (not recorded yet)")
-
-    # Labs (recent)
-    labs = prof.get("labs") if isinstance(prof, dict) else []
-    if not isinstance(labs, list):
-        labs = []
-    if labs:
-        lines.append("- Labs (recent):")
-        for it in labs[:12]:
-            if not isinstance(it, dict):
-                continue
-            nm = str(it.get("name") or "").strip()
-            val = str(it.get("value") or "").strip()
-            un = str(it.get("unit") or "").strip()
-            dt = str(it.get("date") or "").strip()
-            if not nm or not val:
-                continue
-            tail = f"{val} {un}".strip()
-            if dt:
-                tail = tail + f" (date {dt})"
-            lines.append("  - " + nm + ": " + tail)
-    else:
-        lines.append("- Labs: (not recorded yet)")
-
-    return "\n".join([ln for ln in lines if ln.strip()]).strip()
-
-def _health_profile_has_labs(labs: Any) -> bool:
-    if not isinstance(labs, list):
-        return False
-    for it in labs:
-        if not isinstance(it, dict):
-            continue
-        nm = str(it.get("name") or "").strip()
-        val = str(it.get("value") or "").strip()
-        if nm and val:
-            return True
-    return False
-
-def seed_health_profile_from_user_history(project_name: str) -> Dict[str, Any]:
-    """
-    If current health_profile is missing core fields, seed from the most recent
-    health_profile.json in the same user's other projects.
-    Best-effort, bounded, and non-destructive (fills missing only).
-    """
-    from model_pipeline import (
-        _health_profile_has_meds as _mp_health_profile_has_meds,
-        _health_profile_has_allergies as _mp_health_profile_has_allergies,
-        _health_profile_has_weight as _mp_health_profile_has_weight,
-    )
-    try:
-        prof = load_health_profile(project_name)
-    except Exception:
-        prof = _default_health_profile()
-
-    missing = []
-    try:
-        if not _mp_health_profile_has_meds(prof):
-            missing.append("medications")
-    except Exception:
-        missing.append("medications")
-    try:
-        if not _mp_health_profile_has_allergies(prof):
-            missing.append("allergies")
-    except Exception:
-        missing.append("allergies")
-    try:
-        if not _mp_health_profile_has_weight(prof):
-            missing.append("weight")
-    except Exception:
-        missing.append("weight")
-    try:
-        if not _health_profile_has_labs(prof.get("labs") if isinstance(prof, dict) else None):
-            missing.append("labs")
-    except Exception:
-        missing.append("labs")
-
-    if not missing:
-        return {"ok": True, "seeded": False, "missing": []}
-
-    # Find most recent other health_profile.json under this user
-    try:
-        user_seg = str(project_name or "").split("/", 1)[0].strip()
-    except Exception:
-        user_seg = ""
-    if not user_seg:
-        return {"ok": True, "seeded": False, "missing": missing}
-
-    base = PROJECTS_DIR / safe_user_segment(user_seg)
-    if not base.exists():
-        return {"ok": True, "seeded": False, "missing": missing}
-
-    best_prof: Optional[Dict[str, Any]] = None
-    best_proj = ""
-    best_epoch = 0.0
-
-    def _parse_epoch(ts: str) -> float:
-        s = (ts or "").strip()
-        if not s:
-            return 0.0
-        try:
-            return time.mktime(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
-        except Exception:
-            return 0.0
-
-    try:
-        for child in base.iterdir():
-            try:
-                if not child.is_dir():
-                    continue
-            except Exception:
-                continue
-            if child.name == "_user":
-                continue
-            # Skip current project
-            try:
-                if child.resolve() == project_dir(project_name).resolve():
-                    continue
-            except Exception:
-                pass
-
-            hp = child / STATE_DIR_NAME / HEALTH_PROFILE_FILE_NAME
-            if not hp.exists():
-                continue
-            try:
-                obj = json.loads(hp.read_text(encoding="utf-8") or "{}")
-            except Exception:
-                obj = {}
-            if not isinstance(obj, dict) or obj.get("schema") != "health_profile_v1":
-                continue
-
-            # Require at least one meaningful field
-            if not (
-                _mp_health_profile_has_meds(obj)
-                or _mp_health_profile_has_allergies(obj)
-                or _mp_health_profile_has_weight(obj)
-                or _health_profile_has_labs(obj.get("labs"))
-            ):
-                continue
-
-            ep = _parse_epoch(str(obj.get("updated_at") or "").strip())
-            if ep <= 0:
-                try:
-                    ep = float(hp.stat().st_mtime)
-                except Exception:
-                    ep = 0.0
-
-            if ep >= best_epoch:
-                best_epoch = ep
-                best_prof = obj
-                best_proj = child.name
-    except Exception:
-        best_prof = None
-
-    if not isinstance(best_prof, dict):
-        return {"ok": True, "seeded": False, "missing": missing}
-
-    # Merge only missing fields
-    new_prof = dict(prof) if isinstance(prof, dict) else _default_health_profile()
-    fields_seeded: List[str] = []
-
-    if ("medications" in missing) and _mp_health_profile_has_meds(best_prof):
-        new_prof["medications"] = best_prof.get("medications")
-        fields_seeded.append("medications")
-    if ("allergies" in missing) and _mp_health_profile_has_allergies(best_prof):
-        new_prof["allergies"] = best_prof.get("allergies")
-        fields_seeded.append("allergies")
-    if ("weight" in missing) and _mp_health_profile_has_weight(best_prof):
-        new_prof["measurements"] = best_prof.get("measurements")
-        fields_seeded.append("weight")
-    if ("labs" in missing) and _health_profile_has_labs(best_prof.get("labs")):
-        new_prof["labs"] = best_prof.get("labs")
-        fields_seeded.append("labs")
-
-    if fields_seeded:
-        try:
-            _write_health_profile(project_name, new_prof)
-        except Exception:
-            pass
-        return {
-            "ok": True,
-            "seeded": True,
-            "missing": missing,
-            "seeded_fields": fields_seeded,
-            "source_project": best_proj,
-        }
-
-    return {"ok": True, "seeded": False, "missing": missing}
 
 def _default_couples_shared_memory() -> Dict[str, Any]:
     return {
@@ -1318,7 +257,7 @@ def update_couples_shared_memory_from_message(project_name: str, user: str, user
     Couples-only: capture proposed agreements and mark corroborated when both partners mention them.
     """
     try:
-        pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+        pname = safe_project_name(project_name)
         user_seg = pname.split("/", 1)[0].strip().lower()
         if not user_seg.startswith("couple_"):
             return
@@ -1389,7 +328,7 @@ def update_couples_shared_memory_from_assistant(project_name: str, assistant_msg
     Couples-only: capture therapist-suggested rules (proposed_by_quinn).
     """
     try:
-        pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+        pname = safe_project_name(project_name)
         user_seg = pname.split("/", 1)[0].strip().lower()
         if not user_seg.startswith("couple_"):
             return
@@ -2151,7 +1090,7 @@ def policy_decision_for_tier1_claim(
 def _policy_request_keywords_for_entity_key(entity_key: str) -> List[str]:
     ek = _policy_norm(entity_key)
     if ek == "user.identity.birthdate":
-        return ["birthday", "birthdate", "date of birth", "dob", "born"]
+        return ["birthday", "born"]
     if ek.startswith("user.relationship.") and ek.endswith(".birthdate"):
         return ["birthday", "birthdate", "born"]
     if ek == "user.identity.location":
@@ -2253,26 +1192,6 @@ def user_facts_raw_path(user: str) -> Path:
 def _today_ymd_utc() -> str:
     return time.strftime("%Y-%m-%d", time.gmtime())
 
-def _today_ymd_for_tz(tz_name: str) -> tuple[str, str]:
-    tz = (tz_name or "").strip()
-    if tz and ZoneInfo is not None:
-        try:
-            dt = datetime.now(ZoneInfo(tz))
-            return dt.strftime("%Y-%m-%d"), tz
-        except Exception:
-            pass
-    return _today_ymd_utc(), "UTC"
-
-def _today_ymd_for_user(user: str) -> tuple[str, str]:
-    try:
-        prof = _load_json_obj(user_profile_path(user)) or {}
-    except Exception:
-        prof = {}
-    ident = prof.get("identity") if isinstance(prof.get("identity"), dict) else {}
-    tz_rec = ident.get("timezone") if isinstance(ident.get("timezone"), dict) else {}
-    tz_val = str((tz_rec.get("value") or "")).strip()
-    return _today_ymd_for_tz(tz_val)
-
 def _derive_age_from_birthdate(birthdate_ymd: str) -> Optional[int]:
     """
     Age is derived at read time ONLY. Stored fact is birthdate (YYYY-MM-DD).
@@ -2345,14 +1264,12 @@ def load_user_profile(user: str) -> Dict[str, Any]:
         bd_status = str((bd_rec.get("status") or "")).strip().lower()
         bd_val = str((bd_rec.get("value") or "")).strip()
         if bd_status == "confirmed" and bd_val:
-            age, asof_ymd, asof_tz = _derive_age_from_birthdate_for_user(bd_val, user)
+            age = _derive_age_from_birthdate(bd_val)
             if age is not None:
                 obj.setdefault("derived", {})
                 if isinstance(obj["derived"], dict):
                     obj["derived"]["age_years"] = int(age)
                     obj["derived"]["age_asof_utc"] = _today_ymd_utc()
-                    obj["derived"]["age_asof_local"] = asof_ymd
-                    obj["derived"]["age_asof_tz"] = asof_tz
     except Exception:
         pass
 
@@ -3550,18 +2467,11 @@ def render_user_profile_snippet(user: str, *, user_text: str = "") -> str:
         lines.append(f"- preferred_name: {pn}")
     if pro:
         lines.append(f"- pronouns: {pro}")
-    # Derived age can be surfaced without revealing birthdate when user asks about age.
-    age, asof_ymd, asof_tz = _derive_age_from_birthdate_for_user(
-        str((ident.get("birthdate") or {}).get("value") or "").strip(),
-        user,
-    )
-    asks_age = any(k in (user_text or "").lower() for k in ("age", "how old", "years old"))
     if bd:
         lines.append(f"- birthdate: {bd}")
+        age = _derive_age_from_birthdate(str((ident.get("birthdate") or {}).get("value") or "").strip())
         if age is not None:
-            lines.append(f"- derived_age_years: {age} (asof={asof_ymd} {asof_tz})")
-    elif asks_age and age is not None:
-        lines.append(f"- derived_age_years: {age} (asof={asof_ymd} {asof_tz})")
+            lines.append(f"- derived_age_years: {age} (asof_utc={_today_ymd_utc()})")
     if tz:
         lines.append(f"- timezone: {tz}")
     if loc:
@@ -3637,7 +2547,7 @@ def mark_project_deleted(project_name: str) -> None:
     Mark a project as deleted for a short TTL window.
     This prevents ensure_project()/ensure_project_scaffold() from recreating it immediately.
     """
-    name = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+    name = safe_project_name(project_name)
     _DELETED_PROJECTS[name] = time.time() + float(_DELETED_PROJECT_TTL_S)
 
 
@@ -3646,7 +2556,7 @@ def is_project_deleted(project_name: str) -> bool:
     True only during the TTL window after deletion.
     After TTL, the tombstone expires automatically so the user can recreate the project name.
     """
-    name = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+    name = safe_project_name(project_name)
     exp = _DELETED_PROJECTS.get(name)
     if not exp:
         return False
@@ -3680,25 +2590,6 @@ def file_sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data or b"").hexdigest()
 
 
-def _called_from_server_module() -> bool:
-    frame = None
-    try:
-        frame = inspect.currentframe()
-        if frame is None:
-            return False
-        caller = frame.f_back
-        if caller is None:
-            return False
-        return caller.f_globals.get("__name__") == "server"
-    except Exception:
-        return False
-    finally:
-        try:
-            del frame
-        except Exception:
-            pass
-
-
 def read_text_file(path: Path, *, errors: str = "replace") -> str:
     try:
         return path.read_text(encoding="utf-8", errors=errors)
@@ -3714,12 +2605,6 @@ def read_bytes_file(path: Path) -> bytes:
 
 
 def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8", errors: str = "strict") -> None:
-    rp = str(path).replace("\\", "/")
-    if "/_user/" in rp and _called_from_server_module():
-        raise RuntimeError(
-            "Refusing direct write to global user memory from server.py. "
-            "Use project_store as the single authority."
-        )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(content or "", encoding=encoding, errors=errors)
@@ -3727,17 +2612,32 @@ def atomic_write_text(path: Path, content: str, *, encoding: str = "utf-8", erro
 
 
 def atomic_write_bytes(path: Path, content: bytes) -> None:
-    rp = str(path).replace("\\", "/")
-    if "/_user/" in rp and _called_from_server_module():
-        raise RuntimeError(
-            "Refusing direct write to global user memory from server.py. "
-            "Use project_store as the single authority."
-        )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(content or b"")
     os.replace(tmp, path)
 
+
+def now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def safe_project_name(name: str) -> str:
+    """
+    Normalize a project name while preserving folder nesting like "User/Project".
+    Each path segment is sanitized independently.
+    """
+    raw = (name or "").strip().replace("\\", "/")
+    parts = [p for p in raw.split("/") if p.strip()]
+    if not parts:
+        return DEFAULT_PROJECT_NAME
+
+    cleaned_parts: List[str] = []
+    for part in parts:
+        cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", part.strip())
+        cleaned_parts.append(cleaned or DEFAULT_PROJECT_NAME)
+
+    return "/".join(cleaned_parts)
 
 # -----------------------------------------------------------------------------
 # Couples links (system-private; not inside any user's project tree)
@@ -3800,7 +2700,7 @@ def get_couple(couple_id: str) -> Optional[Dict[str, Any]]:
 
 def project_dir(project_name: str) -> Path:
     pr, pd = _require_configured()
-    return pd / path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+    return pd / safe_project_name(project_name)
 
 
 def project_manifest_path(project_name: str) -> Path:
@@ -3809,10 +2709,7 @@ def project_manifest_path(project_name: str) -> Path:
 
 def ensure_project(project_name: str) -> Path:
     if is_project_deleted(project_name):
-        raise RuntimeError(
-            f"Project '{path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)}' "
-            "was just deleted; refusing to auto-recreate."
-        )
+        raise RuntimeError(f"Project '{safe_project_name(project_name)}' was just deleted; refusing to auto-recreate.")
     pr, pd = _require_configured()
     pdir = project_dir(project_name)
     (pdir / RAW_DIR_NAME).mkdir(parents=True, exist_ok=True)
@@ -3821,7 +2718,7 @@ def ensure_project(project_name: str) -> Path:
     if not project_manifest_path(project_name).exists():
         manifest = {
             "version": MANIFEST_VERSION,
-            "project_name": path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME),
+            "project_name": safe_project_name(project_name),
             "display_name": "",
             "created_at": time.time(),
             "updated_at": time.time(),
@@ -3859,7 +2756,7 @@ def load_manifest(project_name: str) -> Dict[str, Any]:
 
     # minimal repair
     m.setdefault("version", MANIFEST_VERSION)
-    m.setdefault("project_name", path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME))
+    m.setdefault("project_name", safe_project_name(project_name))
     m.setdefault("display_name", "")
     m.setdefault("created_at", time.time())
     m.setdefault("updated_at", time.time())
@@ -4271,7 +3168,7 @@ def append_fact_raw_candidate(
     # ---------------------------------------------------------------------
     try:
         # Determine user segment from "user/project" naming.
-        pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+        pname = safe_project_name(project_name)
         user_seg0 = pname.split("/", 1)[0].strip()
 
         if user_seg0:
@@ -6251,7 +5148,7 @@ def render_pending_bringups_for_session(project_name: str, *, session_start: boo
         return ""
 
     # Determine current user segment from "user/project"
-    pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+    pname = safe_project_name(project_name)
     user_seg = pname.split("/", 1)[0].strip()
     proj_seg = pname.split("/", 1)[1].strip() if "/" in pname else DEFAULT_PROJECT_NAME
     if not user_seg.lower().startswith("couple_"):
@@ -6284,8 +5181,8 @@ def render_pending_bringups_for_session(project_name: str, *, session_start: boo
 
     # Option A rule: scan bringups inside the CURRENT project segment (e.g., therapy_test)
     # for both partners, not link-record defaults.
-    proj_a = path_engine.safe_project_name(f"{ua}/{proj_seg or DEFAULT_PROJECT_NAME}", default_project_name=DEFAULT_PROJECT_NAME)
-    proj_b = path_engine.safe_project_name(f"{ub}/{proj_seg or DEFAULT_PROJECT_NAME}", default_project_name=DEFAULT_PROJECT_NAME)
+    proj_a = safe_project_name(f"{ua}/{proj_seg or DEFAULT_PROJECT_NAME}")
+    proj_b = safe_project_name(f"{ub}/{proj_seg or DEFAULT_PROJECT_NAME}")
 
     # Bringups may be stored in either partner's project; scan both.
     items = []
@@ -6751,7 +5648,6 @@ _CANONICAL_STATE_FILES: Dict[str, str] = {
     "conflicts.md": "conflicts.md",
     "capability_gaps.md": "capability_gaps.md",
     "library_index.md": "library_index.md",
-    "health_profile.json": HEALTH_PROFILE_FILE_NAME,
     "decisions.jsonl": DECISIONS_FILE_NAME,
     "decision_candidates.jsonl": DECISION_CANDIDATES_FILE_NAME,
     "upload_notes.jsonl": UPLOAD_NOTES_FILE_NAME,
@@ -7246,7 +6142,7 @@ def build_canonical_snippets(
     partner_project_full = ""
     try:
         no_extra = "__NO_COUPLES_EXTRA__" in (user_text or "")
-        pname = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+        pname = safe_project_name(project_name)
         user_seg = pname.split("/", 1)[0].strip()
         proj_seg = pname.split("/", 1)[1].strip() if "/" in pname else DEFAULT_PROJECT_NAME
 
@@ -7280,9 +6176,7 @@ def build_canonical_snippets(
                     partner_user = ua
 
                 partner_proj = proj_seg or DEFAULT_PROJECT_NAME
-                partner_project_full = path_engine.safe_project_name(
-                    f"{partner_user}/{partner_proj}", default_project_name=DEFAULT_PROJECT_NAME
-                )
+                partner_project_full = safe_project_name(f"{partner_user}/{partner_proj}")
     except Exception:
         partner_user = ""
         partner_project_full = ""
@@ -7553,7 +6447,7 @@ def build_canonical_snippets(
 
     # Couples Shared Memory (agreements, corroborated vs proposed)
     try:
-        pname2 = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+        pname2 = safe_project_name(project_name)
         user_seg2 = pname2.split("/", 1)[0].strip().lower()
         if user_seg2.startswith("couple_"):
             mem = load_couples_shared_memory(project_name)
@@ -8730,23 +7624,6 @@ def load_upload_notes(project_name: str) -> List[Dict[str, Any]]:
     except Exception:
         return out
     return out
-
-def _derive_age_from_birthdate_for_user(birthdate_ymd: str, user: str) -> tuple[Optional[int], str, str]:
-    out: Optional[int] = None
-    b = (birthdate_ymd or "").strip()
-    asof_ymd, asof_tz = _today_ymd_for_user(user)
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", b):
-        try:
-            by, bm, bd = [int(x) for x in b.split("-")]
-            ty, tm, td = [int(x) for x in asof_ymd.split("-")]
-            age = ty - by
-            if (tm, td) < (bm, bd):
-                age -= 1
-            if 0 <= age <= 130:
-                out = int(age)
-        except Exception:
-            out = None
-    return out, asof_ymd, asof_tz
 
 
 def load_capability_gaps(project_name: str, limit: int = 2000) -> List[Dict[str, Any]]:
@@ -11374,7 +10251,7 @@ def build_extraction_ledger_and_write(
     ledger_obj: Dict[str, Any] = {
         "version": 1,
         "generated_at": extracted_at,
-        "project": path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME),
+        "project": safe_project_name(project_name),
         "item_count": len(all_items),
         "items": all_items,
     }
@@ -11473,10 +10350,7 @@ WORKING_DOC_SPECS: List[Tuple[str, str, str, str]] = [
 
 def ensure_project_scaffold(project_name: str) -> None:
     if is_project_deleted(project_name):
-        raise RuntimeError(
-            f"Project '{path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)}' "
-            "was just deleted; refusing to auto-recreate scaffold."
-        )
+        raise RuntimeError(f"Project '{safe_project_name(project_name)}' was just deleted; refusing to auto-recreate scaffold.")
     ensure_project(project_name)
     m = load_manifest(project_name)
     goal = (m.get("goal") or "").strip()
@@ -11591,13 +10465,6 @@ def ensure_project_scaffold(project_name: str) -> None:
     except Exception:
         pass
 
-    # Health profile (project-scoped; JSON)
-    try:
-        user_seg = _project_user_segment(project_name)
-        _ensure_expert_profiles(user_seg)
-    except Exception:
-        pass
-
 
 # -----------------------------------------------------------------------------
 # File registration / listing
@@ -11705,7 +10572,7 @@ def list_project_files(project_name: str) -> Dict[str, Any]:
     pr, pd = _require_configured()
     m = load_manifest(project_name)
 
-    project_full = path_engine.safe_project_name(project_name, default_project_name=DEFAULT_PROJECT_NAME)
+    project_full = safe_project_name(project_name)
     expected_prefix = f"projects/{project_full}/"
 
     def _norm(p: Any) -> str:
@@ -12025,7 +10892,7 @@ def collect_full_corpus_for_source(project_name: str, rel_path: str, *, max_char
 # PDF + image overview helpers
 # -----------------------------------------------------------------------------
 
-def load_pdf_text(path: Path, *, allow_ocr: bool = True, ocr_max_pages: int = 25) -> str:
+def load_pdf_text(path: Path) -> str:
     try:
         reader = PdfReader(str(path))
         pages: List[str] = []
@@ -12038,16 +10905,13 @@ def load_pdf_text(path: Path, *, allow_ocr: bool = True, ocr_max_pages: int = 25
         if text:
             return text
 
-        if not allow_ocr:
-            return ""
-
         if convert_from_path is None or pytesseract is None:
             return "(PDF error: no extractable text found; scanned PDF OCR not available (install pdf2image + poppler + pytesseract/tesseract).)"
 
         try:
             images = convert_from_path(str(path))
             ocr_parts: List[str] = []
-            for i, im in enumerate(images[:max(1, int(ocr_max_pages or 25))]):
+            for i, im in enumerate(images[:25]):
                 try:
                     ocr = pytesseract.image_to_string(im) or ""
                     ocr = ocr.strip()
@@ -12212,19 +11076,6 @@ def _try_convert_doc_to_docx_text(project_name: str, path: Path) -> Tuple[str, s
     except Exception:
         soffice = None
     if not soffice:
-        # Windows fallback: common install paths (avoid requiring PATH update)
-        try:
-            candidates = [
-                Path(r"C:\Program Files\LibreOffice\program\soffice.exe"),
-                Path(r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"),
-            ]
-            for c in candidates:
-                if c.exists():
-                    soffice = str(c)
-                    break
-        except Exception:
-            soffice = None
-    if not soffice:
         return "", "soffice_not_available"
 
     try:
@@ -12270,17 +11121,6 @@ def _try_convert_doc_to_docx_text(project_name: str, path: Path) -> Tuple[str, s
 # -----------------------------------------------------------------------------
 # Upload ingestion entrypoint
 # -----------------------------------------------------------------------------
-
-def _analysis_hat_active(project_name: str) -> bool:
-    try:
-        st = load_project_state(project_name) or {}
-    except Exception:
-        return False
-    try:
-        last_ex = str(st.get("last_active_expert") or "").strip().lower()
-    except Exception:
-        last_ex = ""
-    return last_ex == "analysis"
 
 def ingest_uploaded_file(
     project_name: str,
@@ -12352,8 +11192,7 @@ def ingest_uploaded_file(
 
     # PDF
     if suffix == ".pdf":
-        analysis_mode = _analysis_hat_active(project_name)
-        text = load_pdf_text(abs_path, allow_ocr=(not analysis_mode))
+        text = load_pdf_text(abs_path)
         capped = text[:200000]
 
         # Always store extracted/OCR text (even if sparse)
@@ -12370,7 +11209,7 @@ def ingest_uploaded_file(
         ocr_pages = []
 
         # If this is likely a scanned plan, render pages to images + OCR per page
-        if (not analysis_mode) and (convert_from_path is not None and pytesseract is not None):
+        if convert_from_path is not None and pytesseract is not None:
             try:
                 images = convert_from_path(str(abs_path), dpi=300)
                 for i, img in enumerate(images):
@@ -12457,24 +11296,14 @@ def ingest_uploaded_file(
             except Exception:
                 pass
 
-        if analysis_mode:
-            overview = "\n".join([
-                f"# PDF overview: {abs_path.name}",
-                "",
-                f"- Path: {canonical_rel}",
-                "- Type: PDF",
-                f"- Text extract: {'ok' if text.strip() else 'none'}",
-                "- OCR: deferred (analysis ladder will escalate if needed)",
-            ])
-        else:
-            overview = "\n".join([
-                f"# PDF overview: {abs_path.name}",
-                "",
-                f"- Path: {canonical_rel}",
-                "- Type: architectural plan (scanned)",
-                "",
-                "Plan pages and OCR text have been stored and indexed.",
-            ])
+        overview = "\n".join([
+            f"# PDF overview: {abs_path.name}",
+            "",
+            f"- Path: {canonical_rel}",
+            "- Type: architectural plan (scanned)",
+            "",
+            "Plan pages and OCR text have been stored and indexed.",
+        ])
 
         create_artifact(
             project_name,
@@ -12485,8 +11314,6 @@ def ingest_uploaded_file(
             file_ext=".md",
         )
 
-        if analysis_mode:
-            return f"Ingested PDF '{abs_path.name}' (text extracted; OCR deferred for analysis ladder)."
         return f"Ingested architectural plan '{abs_path.name}' (pages rendered, OCR extracted, plan added to project memory)."
 
 
@@ -12499,10 +11326,8 @@ def ingest_uploaded_file(
             text, note = _extract_docx_text(abs_path)
         else:
             text, note = _extract_doc_legacy_text(abs_path)
-            # Legacy .doc is low-fidelity by definition; if LibreOffice is available,
-            # always attempt conversion for a higher-quality extract.
-            needs_convert = (not text) or (len(text) < 1500) or ("doc_legacy_strings" in note) or ("doc_low_signal" in note)
-            if needs_convert:
+            # If low-signal legacy .doc, attempt conversion via LibreOffice (if available)
+            if (not text) or (len(text) < 1500):
                 t2, n2 = _try_convert_doc_to_docx_text(project_name, abs_path)
                 if t2:
                     text, note = t2, (note + ";" + n2 if note else n2)

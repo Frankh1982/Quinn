@@ -1,0 +1,9 @@
+Insert immediately AFTER this exact line: def unified_git_diff(rel_path: str, old_text: str, new_text: str) -> str:
+With this code:
+```python
+    # NOTE: 1766091671_server.py is the shipped filename for this server in some environments.
+    # This helper simply forwards to unified_git_diff so external tooling can call the
+    # function name that matches the on-disk filename.
+def unified_git_diff_1766091671_server(rel_path: str, old_text: str, new_text: str) -> str:
+    return unified_git_diff(rel_path, old_text, new_text)
+```

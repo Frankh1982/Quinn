@@ -1,0 +1,32 @@
+{"id": "U-Frank-0001", "type": "FACT", "scope": "USER", "key": "name", "value": "Frank", "text": "The user's name is Frank.", "source": "USER_CONFIRMED", "status": "ACTIVE", "confidence": 10}
+{"id": "U-Frank-0002", "type": "PREFERENCE", "scope": "USER", "text": "Frank prefers blunt, no-fluff answers without sycophancy or hype.", "source": "USER_CONFIRMED", "status": "ACTIVE", "confidence": 10}
+{"id": "U-Frank-0003", "type": "PREFERENCE", "scope": "USER", "text": "Frank wants every answer to include an explicit confidence level and a short explanation of reasoning and uncertainties.", "source": "USER_CONFIRMED", "status": "ACTIVE", "confidence": 10}
+{"id": "U-Frank-0004", "type": "MAXIM", "scope": "USER", "text": "When answering Frank, challenge assumptions that conflict with data or logic even if it risks disagreement.", "source": "USER_CONFIRMED", "status": "ACTIVE", "confidence": 10}
+
+{"id": "U-Frank-0005", "type": "MAXIM", "scope": "USER", "text": "For personalized investing questions, Frank will provide country/tax status, horizon, risk tolerance/capacity, annual savings, and current holdings.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 6}
+{"id": "U-Frank-0006", "type": "MAXIM", "scope": "USER", "text": "For health-myth questions, give Frank a one-sentence bottom line first, then 2–3 brief evidence bullets.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 7}
+
+{"id": "U-Frank-0007", "type": "MAXIM", "scope": "USER", "text": "Before giving any relationship advice to Frank about romantic, family, friendship, or workplace issues, ask clarifying questions first (goal, relationship type/ages, brief history, recent trigger, constraints, desired tone) and wait for his response unless there is an immediate safety risk such as abuse or self-harm.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 8}
+{"id": "U-Frank-0008", "type": "MAXIM", "scope": "USER", "text": "If Frank does not answer relationship clarifying questions, limit advice to general principles, state Low confidence, and encourage him to provide more context.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 6}
+
+{"id":"U-Frank-0009","type":"MAXIM","scope":"USER","text":"When Frank sends 'feedback: bad' without details, ask him to choose one or two quick reason codes before adjusting behavior.","source":"AUTODERIVED_CONFIRMED","status":"ACTIVE","confidence":6}
+{"id":"U-Frank-0010","type":"MAXIM","scope":"USER","text":"If the same style pattern for Frank in a given domain receives 'feedback: good' three times, treat that pattern as a standing preference and encode it as a USER maxim.","source":"AUTODERIVED_CONFIRMED","status":"ACTIVE","confidence":5}
+
+{"id":"U-Frank-PARTNER-0001","type":"FACT","scope":"USER","text":"Frank’s partner is named Emanie.","source":"AUTODERIVED_CONFIRMED","status":"ACTIVE","confidence":6}
+{"id": "U-Frank-CHILD-0001", "type": "MAXIM", "scope": "USER", "text": "Frank has exactly one child, Logan (16 years old; update age annually).", "source": "AUTOMERGED", "status": "ACTIVE", "confidence": 7}
+
+{"id":"U-Frank-0011","type":"FACT","scope":"USER","text":"Frank’s birthday is October 7, 1982.","source":"AUTODERIVED_CONFIRMED","status":"ACTIVE","confidence":6}
+{"id":"U-Frank-0012","type":"FACT","scope":"USER","text":"Frank’s partner, Emanie, was born March 24, 1996.","source":"AUTODERIVED_CONFIRMED","status":"ACTIVE","confidence":6}
+{"id": "U-Frank-0013", "type": "FACT", "scope": "USER", "text": "Frank currently lives in Oklahoma on an E-2 visa.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 7}
+
+{"id": "U-Frank-0014", "type": "MAXIM", "scope": "USER", "text": "Frank and Emanie plan to marry and want a prenup.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 9}
+{"id":"U-Frank-0015","type":"MAXIM","scope":"USER","text":"Frank and Emanie are atheists and both prefer a homebody lifestyle.","source":"AUTOMERGED","status":"ACTIVE","confidence":6}
+{"id": "U-Frank-AUTO-1763591687234", "type": "MAXIM", "scope": "USER", "text": "Logan’s birthday is August 9, 2009.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 5}
+{"id": "U-Frank-AUTO-1763591687235", "type": "MAXIM", "scope": "USER", "text": "Update Logan’s recorded age annually on August 9.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 5}
+{"id": "U-Frank-AUTO-1763593271890", "type": "MAXIM", "scope": "USER", "text": "Frank’s middle name is Thomas.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 5}
+{"id": "U-Frank-AUTO-1763593577808", "type": "MAXIM", "scope": "USER", "text": "The user’s full legal name is Franklin Thomas Hawes.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 5}
+{"id": "U-Frank-AUTO-1763593577809", "type": "MAXIM", "scope": "USER", "text": "Use “Frank” as the default name when addressing the user.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 5}
+{"id": "U-Frank-AUTO-1763678502753", "type": "MAXIM", "scope": "USER", "text": "When Frank explicitly requests a strict JSON schema, place the schema-compliant object in the Answer section while keeping required meta sections minimal.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 5}
+{"id": "U-Frank-AUTO-1763692157275", "type": "MAXIM", "scope": "USER", "text": "When asking for the “specific results” of a study, include a link, title, or first author/year so I can retrieve the exact numbers.", "source": "AUTODERIVED_CONFIRMED", "status": "ACTIVE", "confidence": 5}
+{"id":"U-Frank-MANUAL-STYLE-001","type":"PREFERENCE","scope":"USER","text":"When answering Frank, prefer a blunt, concise, step-by-step style with minimal hedging and no soft language.","source":"MANUAL","status":"ACTIVE","confidence":9}
+

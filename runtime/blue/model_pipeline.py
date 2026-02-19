@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import time
 import re
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import json
@@ -551,11 +550,6 @@ Tone constraints:
 - No emojis.
 - No therapy or motivational language.
 - No “as an AI” phrasing.
-Health triage style (when discussing symptoms):
-- Avoid alarmist framing. Do NOT open with "urgent care today" unless clear red flags are present.
-- If red flags are relevant, present them as conditional: "If any of these are present, consider same-day care."
-- If no red flags are present, explicitly say home care/monitoring for 24-48 hours is reasonable.
-- Keep red-flag lists short and focused on airway/breathing/rapid worsening.
 List usage rule:
 - Do not use numbered or bulleted lists by default.
 - Use lists only when:
@@ -567,18 +561,14 @@ Return plain text only (no tags).
 
 _CONVERSATIONAL_EXPERT_SYSTEM = """
 Your name is Quinn.
-You are the active expert having a natural conversation.
+You are the active project expert having a natural conversation.
 
 Use CANONICAL_SNIPPETS as persistent background context:
-- Treat CANONICAL_SNIPPETS as "my private notes about this person and context."
+- Treat CANONICAL_SNIPPETS as "my notes about this person/project".
 - You may freely speak and reason like a human expert (therapist/programmer/architect/etc.), using those notes.
-- Do NOT mention projects, goals, or project management unless the user explicitly does.
 
 Truth / memory rules (important):
 - Do NOT invent or fabricate facts that are not in CANONICAL_SNIPPETS.
-- Do NOT claim prior history or "from our notes" unless it appears explicitly in CANONICAL_SNIPPETS.
-- If a needed detail is missing, say you don't have it recorded yet and ask one precise question.
- - Avoid meta phrasing like "what I can confirm / can't confirm" or "from our notes"; speak naturally.
 
 Identity continuity (important):
 - If CANONICAL_SNIPPETS already contains a non-empty preferred name for the user (e.g., identity.preferred_name.value), use it without asking for confirmation.
@@ -591,12 +581,6 @@ Identity continuity (important):
 
 Conversation quality:
 - Be human and helpful. Do not default to refusal language.
-- Avoid robotic acknowledgments like "Got it" or "Understood" as the whole reply.
-Health triage style (when discussing symptoms):
-- Avoid alarmist framing. Do NOT open with "urgent care today" unless clear red flags are present.
-- If red flags are relevant, present them as conditional: "If any of these are present, consider same-day care."
-- If no red flags are present, explicitly say home care/monitoring for 24-48 hours is reasonable.
-- Keep red-flag lists short and focused on airway/breathing/rapid worsening.
 List usage rule:
 - Avoid numbered or bulleted lists unless they materially improve clarity.
 - Prefer short paragraphs for normal conversational responses.
@@ -607,37 +591,9 @@ List usage rule:
 Return plain text only (no tags).
 """.strip()
 
-_HEALTH_EXPERT_SYSTEM_NOTE = """
-HEALTH_EXPERT_MODE:
-- Be direct, science-first, and plainspoken. No euphemisms or performative politeness.
-- Do not refer to projects, project goals, or project management; treat this as a personal health consult.
-- Use HEALTH_PROFILE (if present) as the current meds/weight record.
-- Always verify the full medication list: name, dose, unit, route, frequency, and timing.
-- If any of those are missing, ask ONE precise question to fill the gap.
-- Consider age and weight in safety context. If either is missing, ask for it.
-- If the user hasn't stated a specific health concern yet, ask what they want help with.
-- If HEALTH_PROFILE is empty, start with a brief intake: ask for age, weight, and current meds (one question at a time).
-- Prefer concrete evidence: use uploaded labs or reports when available; if missing, ask for the relevant labs.
-- Never claim prior symptoms, meds, or diagnoses unless they appear explicitly in HEALTH_PROFILE or CANONICAL_SNIPPETS.
-- Only warn about medication interactions if the med is explicitly recorded or the user just told you.
-- Avoid meta phrases like "what I can confirm" or "from our notes."
-- When giving advice, explicitly anchor to known meds/allergies/age/weight in one short sentence if available.
-- Prefer high-quality medical evidence, including international guidelines and peer-reviewed sources, when available.
-- Ignore culturally-specific or non-scientific advice that conflicts with validated medical evidence.
-- You are not a doctor and you are not prescribing. Never claim to diagnose.
-- For safety-critical decisions, recommend confirmation with a licensed clinician.
- - When suggesting medications:
-   - Present OTC and prescription options as "discussion options" only.
-   - Say explicitly: "This is based on what I know about you and the records here. Please talk to your doctor."
-   - Provide a brief "Reason to discuss" tied to the user's symptoms/labs/history.
-   - Do NOT give prescription dosing. For OTC, refer to label directions unless the user provides a clinician-approved dose.
-""".strip()
-
 _COUPLES_THERAPIST_SYSTEM = """
 Your name is Quinn.
-You are a couples therapist who is grounded, factual, and non-placating.
-You must stay anchored to facts and feelings that are explicitly stated.
-Do NOT infer conflict patterns, motives, or dynamics unless the user explicitly describes them.
+You are a couples therapist helping two partners improve communication, reduce recurring conflict patterns, and repair ruptures.
 
 You may have access to private notes from each partner (via CANONICAL_SNIPPETS). HARD RULE: NEVER reveal, quote, attribute, or confirm any private content.
 - Do NOT say or imply: "she said", "he told me", "I read", "from your partner's notes", "I know because", or anything that reveals private provenance.
@@ -647,6 +603,7 @@ Privacy / non-disclosure (hard):
 - No direct quotes from either partner’s private space.
 - No identifying “who said what.”
 - Convert private info into neutral themes and permission-based invitations.
+  Example: "A theme that may be worth exploring is feeling unheard around planning. Would it be okay to talk about that?"
 
 Non-weaponization (hard):
 - Do not take sides. Do not arbitrate who is right/wrong.
@@ -655,29 +612,53 @@ Non-weaponization (hard):
 
 Epistemic discipline (couples):
 - Treat event claims as ONE-SIDED unless corroborated by BOTH partners (directly or indirectly).
+- Indirect corroboration counts if both describe the same event in different words (e.g., "you yelled" vs "I raised my voice").
 - If only one side mentions an event, label it as one perspective and seek the other side before treating it as fact.
 - Feelings are valid as experience; they do not establish facts about intent or events.
 - Use COUPLES_SHARED_MEMORY for shared agreements:
   - "corroborated" agreements can be treated as shared facts.
   - "proposed" agreements are tentative; confirm before treating as fact.
 
-Reflect-first rule (hard):
-- First, restate what the user explicitly said (facts + feelings only).
-- Do NOT add interpretations or new dynamics in the first response.
-- If the user is celebrating or reporting a positive moment, do not pivot into conflict framing.
+Clinical approach (explicit disciplines):
+- Primary: Integrative couples therapy using (1) Gottman-style skills (conflict management, repair attempts, soft start-ups) and (2) EFT-style cycle framing (attachment needs; pursue/withdraw patterns).
+Formulation style (first-person mirroring — REQUIRED):
+- When describing patterns or protective moves, speak in first-person mirroring rather than abstract role labels.
+- Prefer language like:
+  - “When you push for clarity, it’s often because you’re trying to protect…”
+  - “When you pull back, it’s often because you’re trying to protect…”
+- Avoid labels such as “the pursuing partner,” “the withdrawing side,” “the hurt/angry side,” or similar role abstractions.
+- Keep formulations grounded in lived experience and felt intent, not categories.
+- This is not casual language; it is deliberate clinical mirroring to increase felt understanding.
+- Toolbelt (use as needed): Motivational Interviewing (reduce resistance, evoke change talk), CBT-style reframes (interpretations vs facts; attribution errors), NVC-style clean requests (feelings/needs/requests without blame), DBT interpersonal effectiveness (clear asks + boundaries), Solution-Focused micro-steps (small wins this week).
 
-Inference gate (hard):
-- Only introduce a pattern, cycle, or hypothesis if the user explicitly asks for analysis
-  OR they describe a conflict pattern directly.
-- If you do hypothesize, label it clearly as a hypothesis and ask for confirmation in ONE short question.
+Tone baseline (anti-sycophantic):
+- Kind, steady, reality-based. Do NOT sugarcoat. Avoid flattery and excessive validation.
+- Be direct about patterns that make things worse (criticism, defensiveness, stonewalling, contempt, escalation, mind-reading) and offer healthier alternatives.
+- Keep warmth without pep-talks. Respectfully challenge distortions and unhelpful strategies.
 
-Tone baseline:
-- Calm, direct, and professional. No placating, no guessing.
-- Avoid therapy jargon unless the user asks for it.
+Default session loop (strong default):
+1) Reflect the emotional truth briefly (1–2 lines). No flattery.
+2) Before naming a pattern, add one brief epistemic softener (clinical humility),
+   such as: “Tell me if this fits,” “Based on what you’ve shared so far,” or
+   “Here’s what I think may be happening—correct me if I’m off.”
+   This is not deference; it is professional calibration.
+3) Identify the interaction cycle/pattern and the likely protective moves on both sides.
+4) Choose ONE intervention from the toolbelt and explain it plainly.
+5) Give ONE small concrete next step (10–15 minutes max).
+6) Ask ONE gentle, high-leverage question.
+
+Intake behavior (when key basics are missing from CANONICAL_SNIPPETS):
+- Ask one starter question at a time, like a real therapist.
+- Examples: preferred names, relationship length, main conflict themes, what “better” would look like.
+- Do not interrogate; ask only what is necessary to proceed.
+
+Truth-bound:
+- Any project-specific facts must come from CANONICAL_SNIPPETS.
+- If something is not in CANONICAL_SNIPPETS, say you don't have it recorded yet and ask a single targeted question to fill the gap.
 
 Output:
 - Return plain text only.
-- End with ONE grounded question when needed; otherwise you may end with a short affirmation.
+- End like a therapist: one small next step + one question (no “deliverables”, no format selection).
 """
 
 _TREBEK_CADENCE_BLOCK = """
@@ -2123,22 +2104,27 @@ def _enforce_couples_neutral_phrasing(text: str) -> str:
 
     # Drop/neutralize the most dangerous provenance phrases (simple, conservative).
     t2 = t
-    # Replace second-person partner references with neutral forms (word-boundary safe)
+
+    # Replace second-person partner references with neutral forms
     repl = [
-        (r"\byour\s+partner\b", "one partner"),
-        (r"\byour\s+girlfriend\b", "one partner"),
-        (r"\byour\s+boyfriend\b", "one partner"),
-        (r"\bshe\b", "one partner"),
-        (r"\bhe\b", "one partner"),
-        (r"\bshe['’]s\b", "one partner is"),
-        (r"\bhe['’]s\b", "one partner is"),
+        ("your partner", "one partner"),
+        ("your girlfriend", "one partner"),
+        ("your boyfriend", "one partner"),
+        ("she ", "one partner "),
+        ("he ", "one partner "),
+        ("she’s", "one partner is"),
+        ("he’s", "one partner is"),
+        ("she's", "one partner is"),
+        ("he's", "one partner is"),
     ]
 
-    for pat, rep in repl:
-        try:
-            t2 = re.sub(pat, rep, t2, flags=re.IGNORECASE)
-        except Exception:
-            pass
+    # Apply case-insensitive-ish by working on a shadow-lower index
+    low = t2.lower()
+    for a, b in repl:
+        if a in low:
+            # do a simple replace on the original string; acceptable for deterministic gate
+            t2 = t2.replace(a, b).replace(a.title(), b).replace(a.upper(), b.upper())
+            low = t2.lower()
 
     # If any explicit “X said/told me/read notes” remains, remove those sentences conservatively.
     if _partner_attribution_violation(t2):
@@ -2440,634 +2426,14 @@ def _tier1_should_skip_sentence(s: str) -> bool:
     # Pure questions / imperatives are not durable personal facts
     if t.endswith("?"):
         return True
+    if low.startswith(("please ", "can you ", "could you ", "do ", "make ", "write ", "show ", "tell me ")):
+        return True
+
     # Very short fragments are usually not stable facts
     if len(t) < 4:
         return True
 
     return False
-
-_HEALTH_DOSE_UNIT_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s*(mg|mcg|g|ml|mL|units|iu|ug)\b", re.IGNORECASE)
-_HEALTH_WEIGHT_RE = re.compile(r"\b(\d{2,3}(?:\.\d+)?)\s*(lb|lbs|pounds|kg|kilograms)\b", re.IGNORECASE)
-_HEALTH_LAB_UNIT_RE = re.compile(
-    r"\b(%|mg/dl|mmol/l|g/dl|ng/ml|ug/ml|miu/l|iu/l|u/l|meq/l|pg/ml|ng/dl|mmhg|k/ul|10\^3/ul|x10\^3/ul|10\^9/l|cells/ul)\b",
-    re.IGNORECASE,
-)
-_HEALTH_LAB_LINE_RE = re.compile(
-    r"(?P<name>[A-Za-z][A-Za-z0-9\s\-/()%]{2,60})\s*[:\-]?\s*"
-    r"(?P<val>-?\d+(?:\.\d+)?)\s*(?P<unit>%|mg/dl|mmol/l|g/dl|ng/ml|ug/ml|miu/l|iu/l|u/l|meq/l|pg/ml|ng/dl|mmhg|k/ul|10\^3/ul|x10\^3/ul|10\^9/l|cells/ul)\b",
-    re.IGNORECASE,
-)
-_HEALTH_DATE_RE = re.compile(r"\b(20\d{2}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}/\d{1,2}/20\d{2})\b")
-_HEALTH_TRIGGERS = (
-    "i take",
-    "i'm taking",
-    "i am taking",
-    "i'm on",
-    "i am on",
-    "my meds",
-    "meds:",
-    "medications",
-    "prescribed",
-    "rx:",
-    "prescription",
-)
-_HEALTH_FREQ_TERMS = (
-    "once daily", "twice daily", "daily", "every day", "every morning", "every night",
-    "bid", "tid", "qid", "qhs", "qam", "qpm", "prn", "as needed",
-)
-_HEALTH_ROUTE_TERMS = (
-    "oral", "by mouth", "po", "iv", "intravenous", "im", "intramuscular",
-    "subcutaneous", "injection", "topical", "inhaled", "inhaler", "nasal", "sublingual",
-)
-_HEALTH_MED_STOPWORDS = {
-    "user",
-    "the",
-    "a",
-    "an",
-    "takes",
-    "take",
-    "taking",
-    "on",
-    "every",
-    "night",
-    "nightly",
-    "morning",
-    "bed",
-    "before",
-    "after",
-    "daily",
-    "once",
-    "twice",
-    "per",
-    "day",
-}
-_HEALTH_ALLERGY_RE = re.compile(
-    r"\b(allergic to|allergy to|allergies to|allergic)\b\s+(?P<items>[^.;\n]+)",
-    re.IGNORECASE,
-)
-_HEALTH_RECREATIONAL_HINTS = (
-    "edible", "edibles", "gummy", "thc", "cbd", "cannabis", "marijuana", "weed",
-    "delta-8", "delta 8", "delta-9", "delta 9", "indica", "sativa", "hybrid",
-    "vape", "dab", "ripple sticks", "ripple",
-)
-
-def _health_extract_weight(text: str) -> Dict[str, str]:
-    s = (text or "").strip()
-    if not s:
-        return {}
-    m = _HEALTH_WEIGHT_RE.search(s)
-    if not m:
-        return {}
-    val = str(m.group(1)).strip()
-    unit_raw = str(m.group(2)).strip().lower()
-    if unit_raw.startswith("lb") or "pound" in unit_raw:
-        unit = "lb"
-    else:
-        unit = "kg"
-    return {"value": val, "unit": unit}
-
-def _health_clean_med_name(name: str) -> str:
-    n = re.sub(r"[^A-Za-z0-9\s\-]", " ", (name or "").strip())
-    n = re.sub(r"\s+", " ", n).strip()
-    if not n:
-        return ""
-    toks = n.split()
-    # strip leading stopwords
-    while toks and toks[0].lower() in _HEALTH_MED_STOPWORDS:
-        toks.pop(0)
-    # strip trailing stopwords
-    while toks and toks[-1].lower() in _HEALTH_MED_STOPWORDS:
-        toks.pop()
-    if not toks:
-        return ""
-    cleaned = " ".join(toks).strip()
-    # require at least one alpha token
-    if not re.search(r"[A-Za-z]{3,}", cleaned):
-        return ""
-    return cleaned
-
-def _health_extract_allergies(text: str) -> List[Dict[str, Any]]:
-    s = (text or "").strip()
-    if not s:
-        return []
-    low = s.lower()
-    if "allerg" not in low:
-        return []
-    if (
-        "no known allergies" in low
-        or "no known drug allergies" in low
-        or "no allergies" in low
-        or "don't have any allergies" in low
-        or "do not have any allergies" in low
-    ):
-        return [{"name": "no known allergies", "status": "none", "raw": s}]
-    m = _HEALTH_ALLERGY_RE.search(s)
-    if not m:
-        return []
-    blob = str(m.group("items") or "").strip()
-    if not blob:
-        return []
-    # split on commas and "and"
-    parts = re.split(r",|\band\b", blob, flags=re.IGNORECASE)
-    out: List[Dict[str, Any]] = []
-    for p in parts:
-        name = (p or "").strip(" .;:").strip()
-        if not name:
-            continue
-        out.append({"name": name, "raw": s})
-        if len(out) >= 8:
-            break
-    return out
-
-def _health_text_is_recreational(val: str) -> bool:
-    low = (val or "").lower()
-    return any(h in low for h in _HEALTH_RECREATIONAL_HINTS)
-
-def _health_pick_best_med_for_personalization(meds: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if not isinstance(meds, list) or not meds:
-        return None
-    junk_tokens = {
-        "edible", "edibles", "dose", "would", "feel", "reports", "normally", "start", "with",
-        "sticks", "and", "to", "because", "plans",
-    }
-    best = None
-    best_score = -1
-    for m in meds:
-        if not isinstance(m, dict):
-            continue
-        name = str(m.get("name") or "").strip()
-        if not name or not re.search(r"[A-Za-z]{3,}", name):
-            continue
-        low = name.lower()
-        if any(t in low.split() for t in junk_tokens):
-            # still allow if it's clearly a medication name
-            if not re.search(r"[A-Za-z]{4,}", name):
-                continue
-        score = 0
-        if str(m.get("frequency") or "").strip():
-            score += 2
-        if str(m.get("route") or "").strip():
-            score += 1
-        if str(m.get("dose") or "").strip() and str(m.get("dose_unit") or "").strip():
-            score += 1
-        if score > best_score:
-            best_score = score
-            best = m
-    return best
-
-def _health_build_personalization_line(
-    prof: Dict[str, Any],
-    *,
-    age_years: Optional[int] = None,
-) -> str:
-    if not isinstance(prof, dict):
-        return ""
-    parts: List[str] = []
-
-    med = _health_pick_best_med_for_personalization(prof.get("medications") or [])
-    if isinstance(med, dict):
-        name = str(med.get("name") or "").strip()
-        dose = str(med.get("dose") or "").strip()
-        unit = str(med.get("dose_unit") or "").strip()
-        freq = str(med.get("frequency") or "").strip()
-        if name:
-            med_bits = [name]
-            if dose and unit:
-                med_bits.append(f"{dose} {unit}")
-            if freq:
-                med_bits.append(freq)
-            parts.append("on " + " ".join(med_bits))
-
-    allergies = prof.get("allergies") if isinstance(prof, dict) else []
-    if isinstance(allergies, list) and allergies:
-        none_only = True
-        names: List[str] = []
-        for a in allergies:
-            if not isinstance(a, dict):
-                continue
-            nm = str(a.get("name") or "").strip()
-            if not nm:
-                continue
-            st = str(a.get("status") or "").strip().lower()
-            if st in ("none", "no", "none_reported") or "no known" in nm.lower():
-                continue
-            none_only = False
-            names.append(nm)
-        if none_only:
-            parts.append("no known medication allergies")
-        elif names:
-            parts.append("allergic to " + ", ".join(names[:3]))
-
-    try:
-        meas = prof.get("measurements") if isinstance(prof, dict) else {}
-        w = (meas or {}).get("weight") if isinstance(meas, dict) else {}
-        wv = str((w or {}).get("value") or "").strip()
-        wu = str((w or {}).get("unit") or "").strip()
-        if wv and wu:
-            parts.append(f"weight {wv} {wu}")
-    except Exception:
-        pass
-
-    if isinstance(age_years, int):
-        parts.append(f"age {age_years}")
-
-    if not parts:
-        return ""
-    return "For context, I’m grounding this in your profile: " + ", ".join(parts) + "."
-
-def _looks_like_health_query(text: str) -> bool:
-    """
-    Conservative health-intent heuristic. Used to apply health safety guards
-    even if the explicit health hat is not active.
-    """
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-    keys = (
-        "health", "symptom", "symptoms", "fever", "cough", "cold", "flu", "covid",
-        "sore throat", "congestion", "runny nose", "stuffy", "headache",
-        "body aches", "nausea", "vomit", "diarrhea", "rash",
-        "medicine", "medicines", "med", "meds", "dosage", "dose", "mg",
-        "ibuprofen", "acetaminophen", "tylenol", "advil", "motrin",
-        "lisinopril", "allergy", "allergies", "blood pressure",
-        "doctor", "diagnosis", "urgent care",
-    )
-    return any(k in t for k in keys)
-
-def _health_profile_has_weight(prof: Dict[str, Any]) -> bool:
-    try:
-        meas = prof.get("measurements") if isinstance(prof, dict) else {}
-        w = (meas or {}).get("weight") if isinstance(meas, dict) else {}
-        wv = str((w or {}).get("value") or "").strip()
-        wu = str((w or {}).get("unit") or "").strip()
-        return bool(wv and wu)
-    except Exception:
-        return False
-
-def _health_profile_has_allergies(prof: Dict[str, Any]) -> bool:
-    try:
-        allergies = prof.get("allergies") if isinstance(prof, dict) else []
-        return bool(isinstance(allergies, list) and allergies)
-    except Exception:
-        return False
-
-def _health_profile_has_meds(prof: Dict[str, Any]) -> bool:
-    try:
-        meds = prof.get("medications") if isinstance(prof, dict) else []
-        return bool(isinstance(meds, list) and meds)
-    except Exception:
-        return False
-
-def _health_profile_has_bp_med(prof: Dict[str, Any]) -> bool:
-    meds = prof.get("medications") if isinstance(prof, dict) else []
-    if not isinstance(meds, list):
-        return False
-    for m in meds:
-        if not isinstance(m, dict):
-            continue
-        nm = str(m.get("name") or "").strip().lower()
-        if not nm:
-            continue
-        if nm in ("lisinopril", "enalapril", "ramipril", "benazepril", "captopril"):
-            return True
-        if nm.endswith("pril") or nm.endswith("sartan"):
-            return True
-    return False
-
-def _health_strip_questions_redundant(
-    user_answer: str,
-    *,
-    has_meds: bool,
-    has_allergies: bool,
-    has_weight: bool,
-    has_age: bool,
-) -> str:
-    if not user_answer:
-        return user_answer
-    lines = user_answer.splitlines()
-    out_lines: List[str] = []
-    q_patterns = []
-    if has_meds:
-        q_patterns.append(r"\b(daily meds|any daily meds|any meds|which meds|medications are you on|what meds)\b")
-    if has_allergies:
-        q_patterns.append(r"\b(allergies|allergic)\b")
-    if has_weight:
-        q_patterns.append(r"\b(weight|weigh|lbs|kg)\b")
-    if has_age:
-        q_patterns.append(r"\b(age|years old|how old)\b")
-
-    for ln in lines:
-        low = ln.lower()
-        if "?" in ln and q_patterns:
-            if any(re.search(p, low, flags=re.IGNORECASE) for p in q_patterns):
-                continue
-        out_lines.append(ln)
-    return "\n".join(out_lines).strip()
-
-def _health_strip_redundant_disclaimers(
-    user_answer: str,
-    *,
-    has_meds: bool,
-    has_allergies: bool,
-    has_weight: bool,
-    has_age: bool,
-) -> str:
-    """
-    Remove lines that claim missing basics when we already have them.
-    """
-    if not user_answer:
-        return user_answer
-    lines = user_answer.splitlines()
-    out: List[str] = []
-    for ln in lines:
-        low = ln.lower()
-        if has_age and ("without your age" in low or "need your age" in low):
-            continue
-        if has_meds and ("without your meds" in low or "need your meds" in low or "current meds" in low):
-            continue
-        if has_allergies and ("without your allergies" in low or "need your allergies" in low):
-            continue
-        if has_weight and ("without your weight" in low or "need your weight" in low):
-            continue
-        out.append(ln)
-    return "\n".join(out).strip()
-
-def _health_filter_otc_conflicts(user_answer: str, prof: Dict[str, Any]) -> str:
-    """
-    Remove oral decongestant suggestions when BP meds are present.
-    """
-    if not user_answer:
-        return user_answer
-    if not _health_profile_has_bp_med(prof):
-        return user_answer
-    bad = ("pseudoephedrine", "phenylephrine", "sudafed", "pe decongestant", "oral decongestant")
-    lines = user_answer.splitlines()
-    kept: List[str] = []
-    for ln in lines:
-        low = ln.lower()
-        if any(b in low for b in bad):
-            continue
-        kept.append(ln)
-    out = "\n".join(kept).strip()
-    # Ensure a safety note exists
-    if out and ("decongestant" not in out.lower()):
-        note = "Given lisinopril, avoid oral pseudoephedrine/phenylephrine; saline or short-term oxymetazoline is safer for congestion."
-        out = (note + "\n\n" + out).strip()
-    return out
-
-def _health_strip_misleading_healthiness(user_answer: str, prof: Dict[str, Any]) -> str:
-    """
-    Remove phrases like 'otherwise healthy' when we have evidence of chronic meds.
-    """
-    if not user_answer:
-        return user_answer
-    if not _health_profile_has_meds(prof):
-        return user_answer
-    bad_phrases = (
-        "otherwise healthy",
-        "if you are otherwise healthy",
-        "assuming you are healthy",
-        "assuming you're healthy",
-    )
-    out_lines: List[str] = []
-    for ln in user_answer.splitlines():
-        low = ln.lower()
-        if any(p in low for p in bad_phrases):
-            continue
-        out_lines.append(ln)
-    return "\n".join(out_lines).strip()
-
-def _health_apply_profile_guard(user_answer: str, prof: Dict[str, Any], *, age_years: Optional[int] = None) -> str:
-    """
-    Ensure the response uses profile info and avoids contradicting known meds.
-    """
-    if not user_answer:
-        return user_answer
-
-    # Remove redundant intake questions
-    has_meds = _health_profile_has_meds(prof)
-    has_allergies = _health_profile_has_allergies(prof)
-    has_weight = _health_profile_has_weight(prof)
-    has_age = isinstance(age_years, int)
-
-    user_answer = _health_strip_questions_redundant(
-        user_answer,
-        has_meds=has_meds,
-        has_allergies=has_allergies,
-        has_weight=has_weight,
-        has_age=has_age,
-    )
-
-    user_answer = _health_strip_redundant_disclaimers(
-        user_answer,
-        has_meds=has_meds,
-        has_allergies=has_allergies,
-        has_weight=has_weight,
-        has_age=has_age,
-    )
-
-    # Filter OTC conflicts based on BP meds
-    user_answer = _health_filter_otc_conflicts(user_answer, prof)
-    # Remove misleading "otherwise healthy" phrasing when meds exist
-    user_answer = _health_strip_misleading_healthiness(user_answer, prof)
-
-    # Prepend personalization line if missing
-    line = _health_build_personalization_line(prof, age_years=age_years)
-    if line:
-        low_ans = user_answer.lower()
-        already = ("lisinopril" in low_ans) or ("allerg" in low_ans) or ("weight" in low_ans) or ("lb" in low_ans) or ("kg" in low_ans)
-        if not already:
-            user_answer = (line + "\n\n" + user_answer).strip()
-
-    return user_answer
-
-def _health_extract_labs_from_text(text: str) -> List[Dict[str, Any]]:
-    s = (text or "").strip()
-    if not s:
-        return []
-    out: List[Dict[str, Any]] = []
-    for raw_ln in re.split(r"[;\n]+", s):
-        ln = (raw_ln or "").strip()
-        if not ln:
-            continue
-        if not _HEALTH_LAB_UNIT_RE.search(ln):
-            continue
-        m = _HEALTH_LAB_LINE_RE.search(ln)
-        if not m:
-            continue
-        name = str(m.group("name") or "").strip()
-        val = str(m.group("val") or "").strip()
-        unit = str(m.group("unit") or "").strip()
-        if not name or not val:
-            continue
-        name = re.sub(r"\s{2,}", " ", name).strip()
-        name = re.sub(r"\s*(result|value)$", "", name, flags=re.IGNORECASE).strip()
-        if len(name) < 3:
-            continue
-        ref = ""
-        try:
-            tail = ln[m.end():]
-            mref = re.search(r"(\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:to|–|-)\s*\d+(?:\.\d+)?)", tail)
-            if mref:
-                ref = mref.group(1).strip()
-        except Exception:
-            ref = ""
-        date = ""
-        try:
-            md = _HEALTH_DATE_RE.search(ln)
-            if md:
-                date = md.group(1).strip()
-        except Exception:
-            date = ""
-        out.append({"name": name, "value": val, "unit": unit, "ref": ref, "date": date, "raw": ln})
-        if len(out) >= 12:
-            break
-    return out
-
-def _health_pick_frequency(seg: str) -> str:
-    low = (seg or "").lower()
-    for t in _HEALTH_FREQ_TERMS:
-        if t in low:
-            return t
-    # Every X hours
-    m = re.search(r"\bevery\s+(\d{1,2})\s*(hours|hrs|hr)\b", low)
-    if m:
-        return f"every {m.group(1)} hours"
-    return ""
-
-def _health_pick_route(seg: str) -> str:
-    low = (seg or "").lower()
-    for t in _HEALTH_ROUTE_TERMS:
-        if t in low:
-            return t
-    return ""
-
-def _health_segment_text(text: str) -> List[str]:
-    s = (text or "")
-    low = s.lower()
-    segs: List[str] = []
-    for trig in _HEALTH_TRIGGERS:
-        start = 0
-        while True:
-            idx = low.find(trig, start)
-            if idx == -1:
-                break
-            seg_start = idx + len(trig)
-            tail = s[seg_start:]
-            m = re.search(r"[.;\n]", tail)
-            seg_end = seg_start + (m.start() if m else len(tail))
-            seg = s[seg_start:seg_end].strip()
-            if seg:
-                segs.append(seg)
-            start = idx + len(trig)
-    if not segs and _HEALTH_DOSE_UNIT_RE.search(s):
-        segs = [s]
-    return segs[:8]
-
-def _health_extract_meds(text: str) -> List[Dict[str, Any]]:
-    s = (text or "").strip()
-    if not s:
-        return []
-
-    meds: List[Dict[str, Any]] = []
-    segs = _health_segment_text(s)
-    for seg in segs:
-        low = seg.lower()
-        # Skip explicit negation without a stop signal
-        if ("don't take" in low or "do not take" in low or "not taking" in low) and not any(
-            k in low for k in ("stopped", "discontinued", "no longer")
-        ):
-            continue
-
-        status = "stopped" if any(k in low for k in ("stopped", "discontinued", "no longer")) else "active"
-        freq = _health_pick_frequency(seg)
-        route = _health_pick_route(seg)
-        found_in_seg = False
-
-        # Pattern: dose -> name
-        for m in re.finditer(
-            r"\b(?P<dose>\d+(?:\.\d+)?)\s*(?P<unit>mg|mcg|g|ml|mL|units|iu|ug)\s*(?:of\s+)?(?P<name>[A-Za-z][A-Za-z0-9\-]*(?:\s+[A-Za-z][A-Za-z0-9\-]*){0,2})",
-            seg,
-            flags=re.IGNORECASE,
-        ):
-            name = str(m.group("name") or "").strip()
-            dose = str(m.group("dose") or "").strip()
-            unit = str(m.group("unit") or "").strip()
-            name = _health_clean_med_name(name)
-            if not name:
-                continue
-            meds.append(
-                {
-                    "name": name,
-                    "dose": dose,
-                    "dose_unit": unit,
-                    "frequency": freq,
-                    "route": route,
-                    "status": status,
-                    "raw": seg.strip(),
-                }
-            )
-            found_in_seg = True
-
-        # Pattern: name -> dose
-        for m in re.finditer(
-            r"\b(?P<name>[A-Za-z][A-Za-z0-9\-]*(?:\s+[A-Za-z][A-Za-z0-9\-]*){0,2})\s*(?P<dose>\d+(?:\.\d+)?)\s*(?P<unit>mg|mcg|g|ml|mL|units|iu|ug)\b",
-            seg,
-            flags=re.IGNORECASE,
-        ):
-            name = str(m.group("name") or "").strip()
-            dose = str(m.group("dose") or "").strip()
-            unit = str(m.group("unit") or "").strip()
-            name = _health_clean_med_name(name)
-            if not name:
-                continue
-            meds.append(
-                {
-                    "name": name,
-                    "dose": dose,
-                    "dose_unit": unit,
-                    "frequency": freq,
-                    "route": route,
-                    "status": status,
-                    "raw": seg.strip(),
-                }
-            )
-            found_in_seg = True
-
-        # Fallback: name-only after triggers (no dose provided)
-        if not found_in_seg:
-            m2 = re.search(r"\b(?P<name>[A-Za-z][A-Za-z0-9\-]*(?:\s+[A-Za-z][A-Za-z0-9\-]*){0,2})\b", seg)
-            if m2:
-                name = _health_clean_med_name(str(m2.group("name") or "").strip())
-                if name and name.lower() not in ("meds", "medications", "prescribed", "prescriptions"):
-                    meds.append(
-                        {
-                            "name": name,
-                            "frequency": freq,
-                            "route": route,
-                            "status": status,
-                            "raw": seg.strip(),
-                        }
-                    )
-
-    # De-dupe by name + dose + unit
-    seen = set()
-    out: List[Dict[str, Any]] = []
-    for m in meds:
-        key = (
-            str(m.get("name") or "").strip().lower(),
-            str(m.get("dose") or "").strip().lower(),
-            str(m.get("dose_unit") or "").strip().lower(),
-        )
-        if not key[0]:
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(m)
-        if len(out) >= 12:
-            break
-    return out
 
 def _tier1_global_eligible_for_tier2g(*, claim: str, slot: str, subject: str, evidence_quote: str = "") -> bool:
     """
@@ -4019,7 +3385,6 @@ async def run_request_pipeline(
     search_cached: bool = False,
     thread_synthesis_text: str = "",
     active_expert: str = "default",
-    preflight_intent: Optional[Dict[str, Any]] = None,
     suppress_output_side_effects: bool = False,
 ) -> Dict[str, Any]:
 
@@ -4363,112 +3728,6 @@ async def run_request_pipeline(
     except Exception:
         pass
 
-    # ------------------------------------------------------------
-    # Health memory capture (deterministic; no magic words)
-    # ------------------------------------------------------------
-    try:
-        ae_h = str(active_expert or "").strip().lower()
-        if ae_h == "writing":
-            ae_h = "health"
-        if (not suppress_output_side_effects) and (ae_h == "health"):
-            # Promote durable global facts (meds/allergies/weight) into health_profile when missing.
-            try:
-                prof0 = ctx.project_store.load_health_profile(current_project_full)
-            except Exception:
-                prof0 = {}
-            has_meds = bool((prof0 or {}).get("medications")) if isinstance(prof0, dict) else False
-            has_allergies = bool((prof0 or {}).get("allergies")) if isinstance(prof0, dict) else False
-            has_weight = False
-            try:
-                meas0 = (prof0 or {}).get("measurements") if isinstance(prof0, dict) else {}
-                w0 = (meas0 or {}).get("weight") if isinstance(meas0, dict) else {}
-                has_weight = bool(str((w0 or {}).get("value") or "").strip())
-            except Exception:
-                has_weight = False
-
-            if (not has_meds) or (not has_allergies) or (not has_weight):
-                try:
-                    user_seg = str(current_project_full or "").split("/", 1)[0].strip()
-                except Exception:
-                    user_seg = ""
-                g_meds: List[Dict[str, Any]] = []
-                g_allergies: List[Dict[str, Any]] = []
-                g_weight: Dict[str, str] = {}
-                try:
-                    if user_seg:
-                        gmap = ctx.project_store.load_user_global_facts_map(user_seg)
-                        entries = gmap.get("entries") if isinstance(gmap, dict) else {}
-                        if isinstance(entries, dict):
-                            for ek, rec in entries.items():
-                                if not isinstance(rec, dict):
-                                    continue
-                                # Consider current value plus history values (global facts keep a history list).
-                                vals: List[str] = []
-                                v0 = str(rec.get("value") or "").strip()
-                                if v0:
-                                    vals.append(v0)
-                                hist = rec.get("history") if isinstance(rec.get("history"), list) else []
-                                for h in (hist or [])[:12]:
-                                    if not isinstance(h, dict):
-                                        continue
-                                    hv = str(h.get("value") or "").strip()
-                                    if hv:
-                                        vals.append(hv)
-                                if not vals:
-                                    continue
-                                for val in vals:
-                                    low = val.lower()
-                                    if (not has_allergies) and ("allerg" in low):
-                                        g_allergies.extend(_health_extract_allergies(val))
-                                    if (not has_meds) and (
-                                        str(ek or "").startswith(("routine.", "context.substance_use"))
-                                        or any(k in low for k in ("takes ", "taking ", " on ", "med", "medication", "prescription", "rx", "mg", "mcg"))
-                                    ):
-                                        if not _health_text_is_recreational(val):
-                                            g_meds.extend(_health_extract_meds(val))
-                                    if (not has_weight) and (not g_weight):
-                                        wv = _health_extract_weight(val)
-                                        if wv:
-                                            g_weight = wv
-                except Exception:
-                    g_meds = []
-                    g_allergies = []
-                    g_weight = {}
-
-                if g_meds or g_allergies or g_weight:
-                    ctx.project_store.update_health_profile(
-                        current_project_full,
-                        meds=g_meds,
-                        allergies=g_allergies,
-                        weight=(g_weight or None),
-                        source_excerpt="promoted_from_global_facts",
-                        timestamp=(ctx.project_store.now_iso() if hasattr(ctx.project_store, "now_iso") else ""),
-                    )
-
-            meds = _health_extract_meds(clean_user_msg)
-            allergies = _health_extract_allergies(clean_user_msg)
-            weight = _health_extract_weight(clean_user_msg)
-            labs = _health_extract_labs_from_text(clean_user_msg)
-            if meds or allergies or weight or labs:
-                excerpt = clean_user_msg[:260] + "..." if len(clean_user_msg) > 261 else clean_user_msg
-                ctx.project_store.update_health_profile(
-                    current_project_full,
-                    meds=meds,
-                    allergies=allergies,
-                    weight=weight or None,
-                    labs=labs,
-                    source_turn=int(turn_n or 0),
-                    source_excerpt=excerpt,
-                    timestamp=(ctx.project_store.now_iso() if hasattr(ctx.project_store, "now_iso") else ""),
-                )
-            # Pull labs from uploaded files if present (deterministic; cached by manifest timestamp).
-            try:
-                ctx.project_store.refresh_health_profile_from_artifacts(current_project_full)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
     appended = 0
     global_appended = 0
 
@@ -4509,47 +3768,16 @@ async def run_request_pipeline(
 
     window_text = "\n".join(win_lines).strip()
 
-    def _tier1_model_mode() -> str:
-        v = str(os.environ.get("LENS0_TIER1_MODEL", "auto") or "").strip().lower()
-        return v if v in ("auto", "always", "off") else "auto"
-
-    def _tier1_should_use_model(msg: str) -> bool:
-        m = (msg or "").strip()
-        if not m:
-            return False
-        if len(m) < 8:
-            return False
-        if len(m) > 1200:
-            return False
-        low = m.lower()
-        # Look for durable-personal signals
-        if re.search(r"\b(my|i|i'm|i am|we|our)\b", low):
-            return True
-        if re.search(r"\b(birthday|birthdate|born|girlfriend|boyfriend|wife|husband|partner|son|daughter|child|mother|father|brother|sister|spouse)\b", low):
-            return True
-        if re.search(r"\b(live in|from|work at|work in|job|pronouns)\b", low):
-            return True
-        if "my name is" in low or "i go by" in low or "call me" in low:
-            return True
-        return False
-
-    cands: List[Dict[str, Any]] = []
-    det_cands: List[Dict[str, Any]] = []
     try:
-        det_cands = _extract_tier1_candidates_from_user_msg(clean_user_msg, max_items=6)
+        cands = await _extract_tier1_candidates_with_model(ctx=ctx, window_text=window_text, max_items=8)
     except Exception:
-        det_cands = []
+        cands = []
 
-    if det_cands:
-        cands = det_cands
-    else:
-        mode = _tier1_model_mode()
-        if mode == "always" or (mode == "auto" and _tier1_should_use_model(clean_user_msg)):
-            try:
-                cands = await _extract_tier1_candidates_with_model(ctx=ctx, window_text=window_text, max_items=8)
-            except Exception:
-                cands = []
-        else:
+    # Conservative fallback: if model extraction fails, keep the old deterministic extractor.
+    if not cands:
+        try:
+            cands = _extract_tier1_candidates_from_user_msg(clean_user_msg, max_items=6)
+        except Exception:
             cands = []
 
 
@@ -4901,23 +4129,6 @@ async def run_request_pipeline(
 
     bootstrap_status = str(st.get("bootstrap_status") or "active").strip()
     goal0 = str(st.get("goal") or "").strip()
-    active_expert_norm = str(active_expert or "").strip().lower()
-    if active_expert_norm == "writing":
-        active_expert_norm = "health"
-    is_health_hat = (active_expert_norm == "health")
-    if not is_health_hat:
-        try:
-            last_ex = str(st.get("last_active_expert") or "").strip().lower()
-            if last_ex == "writing":
-                last_ex = "health"
-            if last_ex == "health":
-                is_health_hat = True
-        except Exception:
-            pass
-    # Health-context fallback: apply health safety/personalization even if hat isn't explicitly active.
-    health_context = is_health_hat or _looks_like_health_query(clean_user_msg)
-    # Suppress user-facing bootstrap prompts; goal inference remains internal.
-    suppress_bootstrap_prompts = True
 
     # ------------------------------------------------------------
     # EFL v1 — bootstrap-safe "project starts alive"
@@ -4925,28 +4136,12 @@ async def run_request_pipeline(
     # accept it as the goal immediately so bootstrap does not hijack turn 1.
     # ------------------------------------------------------------
     msg0 = (clean_user_msg or "").strip()
-    if (not is_health_hat) and (not goal0) and msg0:
+    if (not goal0) and msg0:
         low0 = msg0.lower()
 
         # Reject trivial greeting-only messages from becoming goals.
         # (Keep conservative; we can expand later if needed.)
-        greeting_only = low0 in (
-            "hi",
-            "hello",
-            "hey",
-            "yo",
-            "hiya",
-            "howdy",
-            "sup",
-            "good morning",
-            "good afternoon",
-            "good evening",
-            "good night",
-            "morning",
-            "evening",
-            "gm",
-            "gn",
-        )
+        greeting_only = low0 in ("hi", "hello", "hey", "yo", "sup", "hiya", "howdy")
 
         # Only skip auto-goal for obvious commands / meta controls
         looks_like_command = (
@@ -5046,8 +4241,6 @@ async def run_request_pipeline(
             pass
 
     bootstrap_needed = (not goal0) or (bootstrap_status != "active")
-    if suppress_bootstrap_prompts:
-        bootstrap_needed = False
 
     # ------------------------------------------------------------
     # ENFORCE "NO QUESTIONS" DURING BOOTSTRAP
@@ -5075,25 +4268,8 @@ async def run_request_pipeline(
             ))
         )
         is_question = msg0.endswith("?")
-        greeting_only = low0 in (
-            "hi",
-            "hello",
-            "hey",
-            "yo",
-            "hiya",
-            "howdy",
-            "sup",
-            "good morning",
-            "good afternoon",
-            "good evening",
-            "good night",
-            "morning",
-            "evening",
-            "gm",
-            "gn",
-        )
 
-        if (not looks_like_command) and (not is_question) and (not greeting_only) and (10 <= len(msg0) <= 420):
+        if (not looks_like_command) and (not is_question) and (10 <= len(msg0) <= 420):
             try:
                 ctx.project_store.write_project_state_fields(
                     current_project_full,
@@ -5413,12 +4589,7 @@ async def run_request_pipeline(
         resolved_user_text_for_intent = (clean_user_msg or "").strip()
 
     # Stage 1 (intent classification uses memory-resolved text)
-    # If a preflight intent object is provided, reuse it to avoid a redundant model call.
-    intent_obj: Dict[str, Any] = {}
-    if isinstance(preflight_intent, dict) and str(preflight_intent.get("intent") or "").strip():
-        intent_obj = preflight_intent
-    else:
-        intent_obj = await classify_intent_c6(ctx=ctx, user_text=resolved_user_text_for_intent)
+    intent_obj = await classify_intent_c6(ctx=ctx, user_text=resolved_user_text_for_intent)
     try:
         audit["resolved_user_text_for_intent"] = str(resolved_user_text_for_intent or "")
         audit["intent_obj"] = intent_obj
@@ -5493,25 +4664,8 @@ async def run_request_pipeline(
         canonical_snippets = []
 
     # Seamless continuity: inject GLOBAL Tier-2M facts map so recall/status can use it.
-    # Health context still gets Tier-2G/Tier-2M, but health_profile remains primary for meds/safety.
     try:
         canonical_snippets = _inject_global_user_memory_into_canonical(ctx, current_project_full, canonical_snippets)
-    except Exception:
-        pass
-
-    # Health context: inject global health profile (expert-only, bounded)
-    try:
-        if health_context:
-            hp_snip = ""
-            try:
-                if hasattr(ctx, "project_store") and hasattr(ctx.project_store, "render_health_profile_snippet"):
-                    hp_snip = ctx.project_store.render_health_profile_snippet(current_project_full) or ""
-            except Exception:
-                hp_snip = ""
-            if (hp_snip or "").strip():
-                canonical_snippets.append(
-                    "[health_profile.json (Global Expert; health hat only)]\n" + hp_snip.strip()
-                )
     except Exception:
         pass
 
@@ -6779,8 +5933,6 @@ async def run_request_pipeline(
     # - default expert voice for active_expert=default
     # - conversational expert mode otherwise
     ae = (active_expert or "").strip().lower()
-    if ae == "writing":
-        ae = "health"
     if intent in ("recall", "status"):
         sys_prompt = _GROUNDED_RESPONSE_SYSTEM
         if project_mode == "hybrid":
@@ -6790,64 +5942,6 @@ async def run_request_pipeline(
             sys_prompt = _DEFAULT_EXPERT_SYSTEM
         else:
             sys_prompt = _CONVERSATIONAL_EXPERT_SYSTEM
-    if health_context:
-        sys_prompt = sys_prompt + "\n\n" + _HEALTH_EXPERT_SYSTEM_NOTE
-        # Deterministic intake guard: ensure missing basics are gathered before med advice.
-        health_intake_note = ""
-        try:
-            prof = ctx.project_store.load_health_profile(current_project_full) or {}
-        except Exception:
-            prof = {}
-        missing: List[str] = []
-        try:
-            meds = prof.get("medications") if isinstance(prof, dict) else []
-            if not isinstance(meds, list) or not meds:
-                missing.append("current medications (name, dose, route, frequency)")
-        except Exception:
-            missing.append("current medications (name, dose, route, frequency)")
-        try:
-            meas = prof.get("measurements") if isinstance(prof, dict) else {}
-            w = (meas or {}).get("weight") if isinstance(meas, dict) else {}
-            wv = str((w or {}).get("value") or "").strip()
-            wu = str((w or {}).get("unit") or "").strip()
-            if not (wv and wu):
-                missing.append("weight")
-        except Exception:
-            missing.append("weight")
-        try:
-            allergies = prof.get("allergies") if isinstance(prof, dict) else []
-            if not isinstance(allergies, list) or not allergies:
-                missing.append("allergies")
-        except Exception:
-            missing.append("allergies")
-        try:
-            user_seg = str(current_project_full or "").split("/", 1)[0].strip()
-        except Exception:
-            user_seg = ""
-        try:
-            age = None
-            if user_seg:
-                gp = ctx.project_store.load_user_profile(user_seg)
-                age = (gp.get("derived") or {}).get("age_years")
-            if not isinstance(age, int):
-                missing.append("age")
-        except Exception:
-            missing.append("age")
-
-        if missing:
-            health_intake_note = (
-                "HEALTH_INTAKE_GUARD:\n"
-                f"- Missing: {', '.join(missing)}.\n"
-                "- Ask ONE question at a time to fill missing items.\n"
-                "- Before giving medication recommendations or interaction warnings, confirm the current meds list.\n"
-                "- You may give brief non-drug self-care guidance while you gather missing info.\n"
-            )
-        else:
-            health_intake_note = (
-                "HEALTH_INTAKE_GUARD:\n"
-                "- Confirm the current meds list is still accurate before giving drug-specific advice.\n"
-            )
-        sys_prompt = sys_prompt + "\n\n" + health_intake_note
     # ------------------------------------------------------------
     # Default-mode conversational on-ramp (tiny friendliness + shorter starts)
     #
@@ -7237,27 +6331,6 @@ async def run_request_pipeline(
     except Exception:
         analysis_hat_note = ""
 
-    # OTC max vs prescription max disambiguation (deterministic)
-    otc_disambig_note = ""
-    try:
-        lowu = (clean_user_msg or "").lower()
-        if ("lisinopril" in lowu) and any(k in lowu for k in ("max", "maxes", "maximum")):
-            tail = " ".join(
-                [
-                    str(m.get("content") or "")
-                    for m in (conversation_history or [])[-6:]
-                    if isinstance(m, dict)
-                ]
-            ).lower()
-            if any(k in tail for k in ("otc", "over the counter", "cold", "cough", "decongest", "acetaminophen", "ibuprofen", "guaifenesin", "dextromethorphan")):
-                otc_disambig_note = (
-                    "DISAMBIGUATION_NOTE:\n"
-                    "- The user is asking for OTC maximums given lisinopril, NOT the maximum lisinopril dose.\n"
-                    "- Answer OTC dosing limits and interaction cautions, do not pivot to Rx dose ceilings."
-                )
-    except Exception:
-        otc_disambig_note = ""
-
     messages2 = [
         {"role": "system", "content": sys_prompt},
         {"role": "system", "content": ckcl_lock},
@@ -7302,7 +6375,6 @@ async def run_request_pipeline(
         {"role": "system", "content": yesno_followup_note},
         # CCG: prevent scope resets once context is committed (empty unless applicable)
         {"role": "system", "content": ccg_note},
-        {"role": "system", "content": otc_disambig_note},
         # Consensus-first opening for crowd-knowledge optimization (empty unless applicable)
         {"role": "system", "content": _ccg_consensus_opening_note(conversation_history or [], clean_user_msg or "")},
         {"role": "system", "content": "CANONICAL_SNIPPETS:\n\n" + snippet_blob},
@@ -7324,40 +6396,6 @@ async def run_request_pipeline(
     try:
         if _has_partner_context_snippets(canonical_snippets):
             user_answer2 = _enforce_couples_neutral_phrasing(user_answer2)
-    except Exception:
-        pass
-    # Health personalization guard: ensure profile grounding is explicit.
-    try:
-        if health_context:
-            prof_p = {}
-            try:
-                prof_p = ctx.project_store.load_health_profile(current_project_full) or {}
-            except Exception:
-                prof_p = {}
-            age_p = None
-            try:
-                user_seg = str(current_project_full or "").split("/", 1)[0].strip()
-            except Exception:
-                user_seg = ""
-            try:
-                if user_seg:
-                    gp = ctx.project_store.load_user_profile(user_seg)
-                    age_p = (gp.get("derived") or {}).get("age_years")
-            except Exception:
-                age_p = None
-            line = _health_build_personalization_line(prof_p, age_years=age_p if isinstance(age_p, int) else None)
-            if line:
-                low_ans = (user_answer2 or "").lower()
-                # If already mentioning meds/allergies/weight, don't prepend.
-                already = ("lisinopril" in low_ans) or ("allerg" in low_ans) or ("weight" in low_ans) or ("lb" in low_ans) or ("kg" in low_ans)
-                if not already:
-                    user_answer2 = (line + "\n\n" + (user_answer2 or "").strip()).strip()
-            # Enforce use of profile info and avoid contraindicated OTC suggestions.
-            user_answer2 = _health_apply_profile_guard(
-                user_answer2,
-                prof_p if isinstance(prof_p, dict) else {},
-                age_years=age_p if isinstance(age_p, int) else None,
-            )
     except Exception:
         pass
     # ------------------------------------------------------------
@@ -7478,6 +6516,7 @@ async def run_request_pipeline(
                 # Keep continuity: return the retry answer anyway (best-effort), and only fall back
                 # to a generic message if the retry produced nothing.
                 try:
+                    import os
                     if (os.environ.get("LENS0_DEBUG_CONSTRAINTS") or "").strip().lower() in ("1", "true", "yes", "on"):
                         print("[CONSTRAINT] retry still violates:", violations2, flush=True)
                 except Exception:

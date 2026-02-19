@@ -29,8 +29,6 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from path_engine import now_iso
-
 from lens0_config import TEXT_LIKE_SUFFIXES
 
 import visual_semantics
@@ -43,7 +41,6 @@ from project_store import (
     register_raw_file,
     raw_dir,
     state_dir,
-    load_project_state,
     create_artifact,
     read_artifact_text,
     ingest_uploaded_file,
@@ -58,8 +55,6 @@ from project_store import (
     register_upload_batch,
     ANALYSIS_PIPELINE_VERSION,
     INGEST_PIPELINE_VERSION,
-    read_text_file,
-    read_bytes_file,
 )
 
 
@@ -82,6 +77,29 @@ def configure(
     _PROJECT_ROOT = Path(project_root).resolve()
     _CAPTION_IMAGE_FN = caption_image_fn
     _CLASSIFY_IMAGE_FN = classify_image_fn
+
+
+# ---------------------------------------------------------------------------
+# Small IO helpers (kept local to avoid importing server.py)
+# ---------------------------------------------------------------------------
+
+def now_iso() -> str:
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def read_text_file(path: Path, *, errors: str = "replace") -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors=errors)
+    except Exception:
+        return ""
+
+
+def read_bytes_file(path: Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except Exception:
+        return b""
 
 
 # ---------------------------------------------------------------------------
@@ -277,18 +295,6 @@ def append_jsonl(path: Path, obj: dict) -> None:
 
 def is_text_suffix(suffix: str) -> bool:
     return (suffix or "").lower() in TEXT_LIKE_SUFFIXES
-
-
-def _analysis_hat_active(project_full: str) -> bool:
-    try:
-        st = load_project_state(project_full) or {}
-    except Exception:
-        return False
-    try:
-        last_ex = str(st.get("last_active_expert") or "").strip().lower()
-    except Exception:
-        last_ex = ""
-    return last_ex == "analysis"
 
 
 def _resolve_ensure_image_semantics_for_file():
@@ -1309,12 +1315,11 @@ async def _upload_worker_loop(worker_id: int) -> None:
                 )
 
             # -----------------------------------------------------------------
-            # HARD REQUIREMENT: image uploads MUST have vision semantics
-            # (except in analysis mode, where OCR-first is allowed).
+            # HARD REQUIREMENT: image uploads MUST have vision semantics.
+            # No silent fallback to caption/OCR-only understanding.
             # -----------------------------------------------------------------
             suf = Path(canonical_rel).suffix.lower()
-            analysis_mode = _analysis_hat_active(project_full)
-            if (not zip_handled) and (not analysis_mode) and (suf in (".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            if (not zip_handled) and (suf in (".png", ".jpg", ".jpeg", ".webp", ".gif")):
                 ok_v, note_v = await _ensure_image_semantics_required(project_full, canonical_rel, orig_name)
 
                 if not ok_v:

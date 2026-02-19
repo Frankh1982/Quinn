@@ -34,7 +34,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from path_engine import now_iso
+
+def now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def sha256_text(s: str) -> str:

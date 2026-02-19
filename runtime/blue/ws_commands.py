@@ -137,16 +137,6 @@ async def dispatch(
     if lower in ("plan", "show plan"):
         return dashboard_for(current_project)
 
-    # Debug report (explicit only)
-    #   !debug
-    #   /cmd debug
-    if lower in ("debug", "debug report"):
-        return await ctx.handle_debug_command(
-            current_project_full=current_project_full,
-            current_project=current_project,
-            user=user,
-        )
-
     # Open a file by name and return a /file?path=... link
     # Usage: open <filename>
     if lower.startswith("open "):

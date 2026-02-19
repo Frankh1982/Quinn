@@ -17,12 +17,20 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
-from path_engine import now_iso
-
 
 # ----------------------------
 # Helpers
 # ----------------------------
+
+def now_iso() -> str:
+    """
+    Return current UTC time in ISO-8601 format with trailing 'Z'.
+    Local helper to avoid importing server.py or project_store.
+    """
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    except Exception:
+        return ""
 
 # ----------------------------
 # Deliverables registry helper (C1)
