@@ -10900,6 +10900,40 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 if ftype == "upload.status":
                     continue
 
+                # UI project list request (token-free)
+                if ftype == "projects.list":
+                    try:
+                        names = list_existing_projects(safe_user_name(user))
+                        # SAFETY/PRIVACY HARDENING:
+                        # Never leak usernames via the projects dropdown.
+                        try:
+                            user_dir_names = set()
+                            for u in (USERS or {}).keys():
+                                user_dir_names.add(safe_user_name(str(u)))
+                            names = [n for n in (names or []) if safe_user_name(str(n)) not in user_dir_names]
+                        except Exception:
+                            pass
+
+                        projects_out = []
+                        for n in (names or []):
+                            title = ""
+                            updated_at = ""
+                            try:
+                                title = str(project_store.get_project_display_name(safe_project_name(f"{user}/{n}")) or "").strip()
+                            except Exception:
+                                title = ""
+                            try:
+                                m = load_manifest(safe_project_name(f"{user}/{n}")) or {}
+                                updated_at = str(m.get("updated_at") or m.get("updatedAt") or "").strip()
+                            except Exception:
+                                updated_at = ""
+                            projects_out.append({"id": n, "name": n, "title": title, "updated_at": updated_at})
+
+                        await websocket.send(json.dumps({"v": 1, "type": "projects.list", "projects": projects_out}, ensure_ascii=False))
+                    except Exception:
+                        pass
+                    continue
+
                 # UI thread history request (token-free): return canonical state/chat_log.jsonl
                 if ftype == "thread.get":
                     try:

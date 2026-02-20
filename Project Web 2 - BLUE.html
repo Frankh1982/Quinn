@@ -2676,6 +2676,73 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       if (projectMenuBackdrop) projectMenuBackdrop.style.display = "none";
     }
 
+    function renderProjectList(items) {
+      if (!projectMenu) return;
+      const list = (items || []).filter(Boolean);
+      if (!list.length) {
+        projectMenu.innerHTML += `<div class="muted" style="padding:8px;">(no chats)</div>`;
+        return;
+      }
+      for (const item of list) {
+        let name = "";
+        let title = "";
+        if (typeof item === "string") {
+          name = item;
+        } else if (item && typeof item === "object") {
+          name = String(item.name || item.id || "").trim();
+          title = String(item.title || "").trim();
+        }
+        if (!name) continue;
+        if (title) projectTitleMap[name] = title;
+
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "projectMenuItem" + (name === currentProjectName ? " current" : "");
+        btn.innerHTML = `
+            <span>${displayNameForProject(name)}</span>
+            <span class="projectMenuMeta">${name === currentProjectName ? "Current" : ""}</span>
+          `;
+
+        btn.addEventListener("click", () => {
+          if (!ws) {
+            appendInfo("[WARN] Not connected; no WebSocket.");
+            return;
+          }
+          if (ws.readyState !== WebSocket.OPEN) {
+            appendInfo("[WARN] Not connected; socket not open.");
+            return;
+          }
+
+          closeProjectMenu();
+
+          // Arm continuity for THIS explicit target
+          noteProjectSwitch("user", name);
+          desiredProjectName = name;
+
+          // Immediately swap the visible thread (ChatGPT-style) before the server finishes switching.
+          // If we have cached history, it will show instantly; otherwise the chat will be empty until new messages arrive.
+          try { ensureThreadVisibleForProject(name); } catch (_) {}
+
+          // Switch by name (never index)
+          // Use canonical WS frame (no user bubble).
+          try {
+            ws.send(JSON.stringify({
+                v: 1,
+                type: "chat.send",
+                text: "!switch project: " + name,
+                project: currentProjectForSend(),
+                active_expert: (activeExpert || "default"),
+                intent: {}
+            }));
+          } catch (_) {}
+
+          showThinking();
+        });
+
+        projectMenu.appendChild(btn);
+      }
+    }
+
     async function openProjectMenu() {
       if (!projectMenu || !projectMenuBackdrop) return;
 
@@ -2749,76 +2816,22 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       projectMenuBackdrop.style.display = "block";
 
       try {
-        const res = await fetch(`${API_ORIGIN}/list_projects`);
-        if (!res.ok) {
-          projectMenu.innerHTML += `<div class="muted" style="padding:8px;">Failed to load chats.</div>`;
-          return;
-        }
-        const data = await res.json().catch(() => ({}));
-        const items = (data && data.projects) ? data.projects : [];
-
-        if (!items.length) {
-          projectMenu.innerHTML += `<div class="muted" style="padding:8px;">(no chats)</div>`;
-          return;
-        }
-
-        for (const item of items) {
-          let name = "";
-          let title = "";
-          if (typeof item === "string") {
-            name = item;
-          } else if (item && typeof item === "object") {
-            name = String(item.name || "").trim();
-            title = String(item.title || "").trim();
+        if (ENV_IS_LOCAL) {
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            projectMenu.innerHTML += `<div class="muted" style="padding:8px;">Not connected.</div>`;
+            return;
           }
-          if (!name) continue;
-          if (title) projectTitleMap[name] = title;
-
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.className = "projectMenuItem" + (name === currentProjectName ? " current" : "");
-          btn.innerHTML = `
-            <span>${displayNameForProject(name)}</span>
-            <span class="projectMenuMeta">${name === currentProjectName ? "Current" : ""}</span>
-          `;
-
-          btn.addEventListener("click", () => {
-            if (!ws) {
-              appendInfo("[WARN] Not connected; no WebSocket.");
-              return;
-            }
-            if (ws.readyState !== WebSocket.OPEN) {
-              appendInfo("[WARN] Not connected; socket not open.");
-              return;
-            }
-
-            closeProjectMenu();
-
-            // Arm continuity for THIS explicit target
-            noteProjectSwitch("user", name);
-            desiredProjectName = name;
-
-            // Immediately swap the visible thread (ChatGPT-style) before the server finishes switching.
-            // If we have cached history, it will show instantly; otherwise the chat will be empty until new messages arrive.
-            try { ensureThreadVisibleForProject(name); } catch (_) {}
-
-            // Switch by name (never index)
-            // Use canonical WS frame (no user bubble).
-            try {
-              ws.send(JSON.stringify({
-                  v: 1,
-                  type: "chat.send",
-                  text: "!switch project: " + name,
-                  project: currentProjectForSend(),
-                  active_expert: (activeExpert || "default"),
-                  intent: {}
-              }));
-            } catch (_) {}
-
-            showThinking();
-          });
-
-          projectMenu.appendChild(btn);
+          ws.send(JSON.stringify({ v: 1, type: "projects.list" }));
+        } else {
+          const res = await fetch(`${API_ORIGIN}/list_projects`);
+          if (!res.ok) {
+            projectMenu.innerHTML += `<div class="muted" style="padding:8px;">Failed to load chats.</div>`;
+            return;
+          }
+          const data = await res.json().catch(() => ({}));
+          const items = (data && data.projects) ? data.projects : [];
+          renderProjectList(items);
+          console.log("[Projects] loaded via HTTP");
         }
       } catch (_) {
         projectMenu.innerHTML += `<div class="muted" style="padding:8px;">Failed to load chats.</div>`;
@@ -4892,6 +4905,14 @@ function updateProjectName(name) {
                                 (typeof obj.message === "string") ? obj.message :
                                 (typeof obj.data === "string") ? obj.data : "";
                     setGreetingBanner(txt);
+                  } catch (_) {}
+                  return; // critical: stop chat append
+                }
+                if (t === "projects.list") {
+                  try {
+                    const items = Array.isArray(obj.projects) ? obj.projects : [];
+                    renderProjectList(items);
+                    console.log("[Projects] loaded via WS");
                   } catch (_) {}
                   return; // critical: stop chat append
                 }
