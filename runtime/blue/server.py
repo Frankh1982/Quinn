@@ -1014,20 +1014,6 @@ def _select_couples_intake_questions(user: str) -> List[Dict[str, Any]]:
             "evidence_template": "My preferred name is {value}",
         },
         {
-            "field_path": "identity.pronouns",
-            "expected_type": "text",
-            "question": "What pronouns should I use for you?",
-            "claim_template": "My pronouns are {value}",
-            "evidence_template": "My pronouns are {value}",
-        },
-        {
-            "field_path": "relationships.partner_name",
-            "expected_type": "text",
-            "question": "What is your partner's name?",
-            "claim_template": "My partner's name is {value}",
-            "evidence_template": "My partner's name is {value}",
-        },
-        {
             "field_path": "identity.birthdate",
             "expected_type": "date",
             "question": "What is your birthdate (MM/DD/YYYY)? You can say skip.",
@@ -1048,36 +1034,43 @@ def _select_couples_intake_questions(user: str) -> List[Dict[str, Any]]:
 
     return out[:6]
 
-def _couples_intake_needed(user: str, project_full: str) -> bool:
+def _couples_intake_missing_fields(user: str, project_full: str) -> List[str]:
     if not _is_couples_user(user):
-        return False
+        return []
     proj_norm = str(project_full or "").replace(" ", "_").lower()
     if not proj_norm.endswith("/couples_therapy"):
-        return False
+        return []
     gaps = _select_couples_intake_questions(user)
     if not gaps:
-        return False
+        return []
+    return [str(g.get("field_path") or "").strip() for g in gaps if str(g.get("field_path") or "").strip()]
 
-    # If absolutely nothing is on file, treat as fresh even if a stale completion flag exists.
-    if len(gaps) >= 4:
-        return True
-
+def _couples_intake_needed(user: str, project_full: str) -> List[str]:
+    missing = _couples_intake_missing_fields(user, project_full)
+    if not missing:
+        return []
     try:
         st = project_store.load_project_state(project_full) or {}
         if bool(st.get("couples_intake_completed")):
-            return False
+            return []
     except Exception:
         pass
-
-    return True
+    return missing
 
 def _maybe_start_couples_intake_questions(user: str, project_full: str) -> Tuple[bool, str]:
     """
     Returns (handled, reply_text). If handled=True, caller should send reply and continue.
     Couples-only intake. Uses the same pending profile question mechanism but autostarts.
     """
-    if not _couples_intake_needed(user, project_full):
+    missing_fields = _couples_intake_needed(user, project_full)
+    if not missing_fields:
         return False, ""
+    try:
+        st = project_store.load_project_state(project_full) or {}
+        if bool(st.get("couples_intake_completed")):
+            return False, ""
+    except Exception:
+        pass
 
     pend = load_user_pending_profile_question(user)
     if is_user_pending_profile_question_unexpired(pend):
@@ -1203,7 +1196,13 @@ def _mark_couples_intake_completed(project_full: str, pend: Dict[str, Any]) -> N
     except Exception:
         return
 
-def _consume_pending_profile_question(user: str, user_msg: str, *, project_full: str = "") -> Tuple[bool, str]:
+def _consume_pending_profile_question(
+    user: str,
+    user_msg: str,
+    *,
+    project_full: str = "",
+    last_assistant_text: str = "",
+) -> Tuple[bool, str]:
     """
     Returns (consumed, reply_text). If consumed=True, caller should send reply and continue.
     """
@@ -1230,6 +1229,28 @@ def _consume_pending_profile_question(user: str, user_msg: str, *, project_full:
     low = um.lower()
 
     couples_intake = (str(pend.get("purpose") or "").strip().lower() == "couples_intake")
+    if couples_intake:
+        try:
+            last_txt = str(last_assistant_text or "").strip()
+        except Exception:
+            last_txt = ""
+        if not last_txt:
+            return False, ""
+        try:
+            expected_q = ""
+            if idx == 0:
+                expected_q = str(item.get("question") or "").strip()
+            else:
+                expected_q = _format_profile_question(item, user)
+                disp_name = _couples_intake_display_name(user)
+                low_q = expected_q.lower().strip()
+                if expected_q and (not (low_q.startswith("thanks") or low_q.startswith("hello") or low_q.startswith("hi"))):
+                    if disp_name:
+                        expected_q = f"Thanks, {disp_name}. {expected_q}"
+            if expected_q and expected_q not in last_txt:
+                return False, ""
+        except Exception:
+            return False, ""
     disp_name = _couples_intake_display_name(user) if couples_intake else ""
 
     # Skip/decline handling
@@ -5907,10 +5928,23 @@ async def build_contextual_greeting(
     - Never invent past topics.
     """
     try:
-        if _couples_intake_needed(user, project_full):
-            handled, reply = _maybe_start_couples_intake_questions(user, project_full)
-            if handled and reply:
-                return reply
+        missing_fields = _couples_intake_missing_fields(user, project_full)
+        try:
+            st = project_store.load_project_state(project_full) or {}
+        except Exception:
+            st = {}
+        try:
+            audit_event(
+                project_full,
+                {
+                    "schema": "audit_turn_v1",
+                    "stage": "couples_intake_greeting_skip",
+                    "couples_intake_completed": bool((st or {}).get("couples_intake_completed")),
+                    "missing_fields_count": len(missing_fields or []),
+                },
+            )
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -11367,6 +11401,35 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             chosen = um
                     if chosen:
                         chosen = chosen.strip().strip(" .!?,")
+                        def _is_valid_pref_name_candidate(val: str) -> Tuple[bool, str]:
+                            v = (val or "").strip()
+                            low_v = v.lower()
+                            if not re.search(r"[A-Za-z]", v):
+                                return False, "no_letters"
+                            if low_v in {"hi", "hey", "hello", "ok", "okay", "yo"}:
+                                return False, "greeting"
+                            if low_v in {"he", "she", "they", "him", "her", "them", "his", "hers", "their", "theirs"}:
+                                return False, "pronoun"
+                            letters_only = re.sub(r"[^A-Za-z]", "", v)
+                            if len(letters_only) <= 2:
+                                if len(letters_only) == 2 and v[:1].isupper() and v[1:2].islower():
+                                    return True, ""
+                                return False, "too_short"
+                            return True, ""
+
+                        ok_name, reason_code = _is_valid_pref_name_candidate(chosen)
+                        if not ok_name:
+                            try:
+                                _trace_emit(
+                                    "tier2g.name.reject",
+                                    {
+                                        "reason": reason_code,
+                                        "candidate": chosen[:24],
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            chosen = ""
                     if (not chosen) and _is_affirmation(um):
                         try:
                             fn = getattr(project_store, "tier2g_single_preferred_name_option", None)
@@ -11455,9 +11518,8 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 except Exception:
                     t2g_msg_for_promo = user_msg
 
-
                 t2g_res = _tier2g_promote_global_memory_or_raise(user, t2g_msg_for_promo)
-                # (removed: assistant-context preferred-name promotion; user-message-only promotion above is authoritative)                
+                # (removed: assistant-context preferred-name promotion; user-message-only promotion above is authoritative)
                 if isinstance(t2g_res, dict) and int(t2g_res.get("written") or 0) > 0:
                     t2g_written_this_turn = True
                     # Minimal redaction to prevent global identity facts entering project logs/memory.
@@ -12270,6 +12332,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             user,
                             msg_strip,
                             project_full=current_project_full,
+                            last_assistant_text=last_full_answer_text,
                         )
                         if consumed and reply:
                             await websocket.send(reply)
@@ -12300,6 +12363,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             user,
                             msg_strip,
                             project_full=current_project_full,
+                            last_assistant_text=last_full_answer_text,
                         )
                         if consumed and reply:
                             await websocket.send(reply)
@@ -13383,20 +13447,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
                     question = f"This would replace the previous decision about {dom}. Correct?"
 
-                    inbox_id = ""
-                    try:
-                        inbox = project_store.append_inbox_item(
-                            current_project_full,
-                            type_="pending_decision",
-                            text=question,
-                            refs=[],
-                            created_at=(now_iso() or "").replace("Z", ""),
-                        )
-                        if isinstance(inbox, dict):
-                            inbox_id = str(inbox.get("id") or "").strip()
-                    except Exception:
-                        inbox_id = ""
-
                     cand = {}
                     try:
                         cand = append_decision_candidate(
@@ -13408,26 +13458,65 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         cand = {}
 
                     if isinstance(cand, dict) and cand.get("id"):
-                        _save_pending_decision(
-                            current_project_full,
-                            {
-                                "id": str(cand.get("id") or "").strip(),
-                                "timestamp": str(cand.get("timestamp") or "").strip(),
-                                "text": new_txt,
-                                "confidence": float(cand.get("confidence") or 0.90),
-                                "status": "pending",
-                                "asked": True,
-                                "asked_at_epoch": float(time.time()),
-                                "asked_msg_index": int(user_msg_counter),
-                                "domain": dom,
-                                "surface": surf,
-                                "supersede_old_id": old_id,
-                                "inbox_id": inbox_id,
-                            },
-                        )
-                        await websocket.send(question)
-                        last_full_answer_text = question
-                        continue
+                        suppress_confirm = False
+                        try:
+                            stx = project_store.load_project_state(current_project_full) or {}
+                            ef = stx.get("expert_frame") if isinstance(stx.get("expert_frame"), dict) else {}
+                            ef_status = str(ef.get("status") or "").strip().lower()
+                            ef_label = str(ef.get("label") or "").strip()
+                            ef_dir = str(ef.get("directive") or "")
+                            if ef_status == "active" and (ef_label == "Couples Therapist" or ("Do NOT talk like a project manager" in ef_dir)):
+                                suppress_confirm = True
+                        except Exception:
+                            suppress_confirm = False
+
+                        if suppress_confirm:
+                            try:
+                                _trace_emit(
+                                    "decision.confirm.suppressed",
+                                    {
+                                        "reason": "couples_therapist_expert_frame",
+                                        "candidate_id": str(cand.get("id") or "").strip(),
+                                        "project": str(current_project_full or ""),
+                                    },
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            inbox_id = ""
+                            try:
+                                inbox = project_store.append_inbox_item(
+                                    current_project_full,
+                                    type_="pending_decision",
+                                    text=question,
+                                    refs=[],
+                                    created_at=(now_iso() or "").replace("Z", ""),
+                                )
+                                if isinstance(inbox, dict):
+                                    inbox_id = str(inbox.get("id") or "").strip()
+                            except Exception:
+                                inbox_id = ""
+
+                            _save_pending_decision(
+                                current_project_full,
+                                {
+                                    "id": str(cand.get("id") or "").strip(),
+                                    "timestamp": str(cand.get("timestamp") or "").strip(),
+                                    "text": new_txt,
+                                    "confidence": float(cand.get("confidence") or 0.90),
+                                    "status": "pending",
+                                    "asked": True,
+                                    "asked_at_epoch": float(time.time()),
+                                    "asked_msg_index": int(user_msg_counter),
+                                    "domain": dom,
+                                    "surface": surf,
+                                    "supersede_old_id": old_id,
+                                    "inbox_id": inbox_id,
+                                },
+                            )
+                            await websocket.send(question)
+                            last_full_answer_text = question
+                            continue
 
                 # Fallback: normal candidate detection
                 cand_text, cand_conf = _detect_decision_candidate(user_msg)
@@ -13462,41 +13551,66 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     if dom and supersede_old_id:
                         question = f"This would replace the previous decision about {dom}. Correct?"
 
-                    inbox_id = ""
-                    try:
-                        inbox = project_store.append_inbox_item(
-                            current_project_full,
-                            type_="pending_decision",
-                            text=question,
-                            refs=[],
-                            created_at=(now_iso() or "").replace("Z", ""),
-                        )
-                        if isinstance(inbox, dict):
-                            inbox_id = str(inbox.get("id") or "").strip()
-                    except Exception:
-                        inbox_id = ""
-
                     if isinstance(cand, dict) and cand.get("id"):
-                        _save_pending_decision(
-                            current_project_full,
-                            {
-                                "id": str(cand.get("id") or "").strip(),
-                                "timestamp": str(cand.get("timestamp") or "").strip(),
-                                "text": cand_text,
-                                "confidence": float(cand.get("confidence") or cand_conf),
-                                "status": "pending",
-                                "asked": True,
-                                "asked_at_epoch": float(time.time()),
-                                "asked_msg_index": int(user_msg_counter),
-                                "domain": dom,
-                                "surface": surf,
-                                "supersede_old_id": supersede_old_id,
-                                "inbox_id": inbox_id,
-                            },
-                        )
-                        await websocket.send(question)
-                        last_full_answer_text = question
-                        continue
+                        suppress_confirm = False
+                        try:
+                            stx = project_store.load_project_state(current_project_full) or {}
+                            ef = stx.get("expert_frame") if isinstance(stx.get("expert_frame"), dict) else {}
+                            ef_status = str(ef.get("status") or "").strip().lower()
+                            ef_label = str(ef.get("label") or "").strip()
+                            ef_dir = str(ef.get("directive") or "")
+                            if ef_status == "active" and (ef_label == "Couples Therapist" or ("Do NOT talk like a project manager" in ef_dir)):
+                                suppress_confirm = True
+                        except Exception:
+                            suppress_confirm = False
+
+                        if suppress_confirm:
+                            try:
+                                _trace_emit(
+                                    "decision.confirm.suppressed",
+                                    {
+                                        "reason": "couples_therapist_expert_frame",
+                                        "candidate_id": str(cand.get("id") or "").strip(),
+                                        "project": str(current_project_full or ""),
+                                    },
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            inbox_id = ""
+                            try:
+                                inbox = project_store.append_inbox_item(
+                                    current_project_full,
+                                    type_="pending_decision",
+                                    text=question,
+                                    refs=[],
+                                    created_at=(now_iso() or "").replace("Z", ""),
+                                )
+                                if isinstance(inbox, dict):
+                                    inbox_id = str(inbox.get("id") or "").strip()
+                            except Exception:
+                                inbox_id = ""
+
+                            _save_pending_decision(
+                                current_project_full,
+                                {
+                                    "id": str(cand.get("id") or "").strip(),
+                                    "timestamp": str(cand.get("timestamp") or "").strip(),
+                                    "text": cand_text,
+                                    "confidence": float(cand.get("confidence") or cand_conf),
+                                    "status": "pending",
+                                    "asked": True,
+                                    "asked_at_epoch": float(time.time()),
+                                    "asked_msg_index": int(user_msg_counter),
+                                    "domain": dom,
+                                    "surface": surf,
+                                    "supersede_old_id": supersede_old_id,
+                                    "inbox_id": inbox_id,
+                                },
+                            )
+                            await websocket.send(question)
+                            last_full_answer_text = question
+                            continue
             # -----------------------------------------------------------------
             # C5.4 — Wordle routing removed
             # -----------------------------------------------------------------
