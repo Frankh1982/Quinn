@@ -9659,6 +9659,39 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         # UI needs a single-line meta message to update the chat pill.
         # Do NOT narrate switching in chat.
         return f"{prefix} {short_name}"
+
+    conn_id = f"conn_{uuid.uuid4().hex[:8]}"
+    _trace_event_counts: Dict[str, Dict[str, int]] = {}
+
+    def _trace_emit(event_type: str, detail: Optional[Dict[str, Any]] = None) -> None:
+        try:
+            tid = get_current_audit_trace_id()
+            if not tid:
+                tid = f"srv_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+                try:
+                    _AUDIT_TRACE_ID.set(tid)
+                except Exception:
+                    pass
+            et = str(event_type or "").strip()
+            per_trace = _trace_event_counts.get(tid)
+            if not isinstance(per_trace, dict):
+                per_trace = {}
+                _trace_event_counts[tid] = per_trace
+            per_trace[et] = int(per_trace.get(et, 0)) + 1
+            count = per_trace[et]
+            obj: Dict[str, Any] = {
+                "trace_id": tid,
+                "conn_id": conn_id,
+                "project": current_project_full,
+                "event_type": et,
+                "ts_monotonic": time.monotonic(),
+                "count": count,
+            }
+            if isinstance(detail, dict) and detail:
+                obj["detail"] = detail
+            print(json.dumps(obj, ensure_ascii=False), flush=True)
+        except Exception:
+            pass
     
     # UI-selected expert (sticky per connection; updated by WS frames)
     active_expert = "default"
@@ -9974,18 +10007,30 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
 
         try:
-            out = await model_pipeline.run_request_pipeline(
-                ctx=sys.modules[__name__],
-                current_project_full=current_project_full,
-                clean_user_msg=synthetic,
-                do_search=False,
-                search_results="",
-                conversation_history=conversation_history,
-                max_history_pairs=MAX_HISTORY_PAIRS,
-                server_file_path=Path(__file__).resolve(),
-                active_expert=active_expert,
-                suppress_output_side_effects=bool(suppress_history),
-            )
+            _gen_ok = False
+            try:
+                _trace_emit("assistant.generate.start")
+            except Exception:
+                pass
+            try:
+                out = await model_pipeline.run_request_pipeline(
+                    ctx=sys.modules[__name__],
+                    current_project_full=current_project_full,
+                    clean_user_msg=synthetic,
+                    do_search=False,
+                    search_results="",
+                    conversation_history=conversation_history,
+                    max_history_pairs=MAX_HISTORY_PAIRS,
+                    server_file_path=Path(__file__).resolve(),
+                    active_expert=active_expert,
+                    suppress_output_side_effects=bool(suppress_history),
+                )
+                _gen_ok = True
+            finally:
+                try:
+                    _trace_emit("assistant.generate.end", {"ok": bool(_gen_ok)})
+                except Exception:
+                    pass
 
         except Exception as e:
             try:
@@ -10358,17 +10403,29 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         ).strip()
 
         try:
-            out = await model_pipeline.run_request_pipeline(
-                ctx=sys.modules[__name__],
-                current_project_full=current_project_full,
-                clean_user_msg=synthetic,
-                do_search=False,
-                search_results="",
-                conversation_history=conversation_history,
-                max_history_pairs=MAX_HISTORY_PAIRS,
-                server_file_path=Path(__file__).resolve(),
-                active_expert=active_expert,
-            )
+            _gen_ok = False
+            try:
+                _trace_emit("assistant.generate.start")
+            except Exception:
+                pass
+            try:
+                out = await model_pipeline.run_request_pipeline(
+                    ctx=sys.modules[__name__],
+                    current_project_full=current_project_full,
+                    clean_user_msg=synthetic,
+                    do_search=False,
+                    search_results="",
+                    conversation_history=conversation_history,
+                    max_history_pairs=MAX_HISTORY_PAIRS,
+                    server_file_path=Path(__file__).resolve(),
+                    active_expert=active_expert,
+                )
+                _gen_ok = True
+            finally:
+                try:
+                    _trace_emit("assistant.generate.end", {"ok": bool(_gen_ok)})
+                except Exception:
+                    pass
         except Exception:
             return
 
@@ -10658,6 +10715,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         - Cap size to stay under WS max_size
         - Never throw (log and return False)
         """
+        frame_type = "text"
         try:
             m = "" if msg is None else str(msg)
             m = m.replace("\x00", "")
@@ -10677,7 +10735,37 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             except Exception:
                 pass
 
+            try:
+                if isinstance(m, str):
+                    s1 = m.lstrip()
+                    if s1.startswith("{"):
+                        obj1 = json.loads(s1)
+                        if isinstance(obj1, dict) and obj1.get("type"):
+                            frame_type = str(obj1.get("type") or "").strip() or "json"
+                        else:
+                            frame_type = "json"
+            except Exception:
+                frame_type = "text"
+            try:
+                detail = {"frame_type": frame_type}
+                if frame_type == "text":
+                    prev = (m or "").replace("\n", " ")
+                    detail["chars"] = len(m or "")
+                    detail["preview"] = prev[:80]
+                _trace_emit("assistant.send.start", detail)
+            except Exception:
+                pass
+
             await _orig_send(m)
+            try:
+                detail = {"ok": True, "frame_type": frame_type}
+                if frame_type == "text":
+                    prev = (m or "").replace("\n", " ")
+                    detail["chars"] = len(m or "")
+                    detail["preview"] = prev[:80]
+                _trace_emit("assistant.send.end", detail)
+            except Exception:
+                pass
 
             # Upload → Expert Synthesis trigger (non-blocking)
             try:
@@ -10687,6 +10775,19 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
             return True
         except Exception as e:
+            try:
+                detail = {"ok": False, "frame_type": frame_type}
+                if frame_type == "text":
+                    prev = (m or "").replace("\n", " ")
+                    detail["chars"] = len(m or "")
+                    detail["preview"] = prev[:80]
+                _trace_emit("assistant.send.end", detail)
+            except Exception:
+                pass
+            try:
+                _trace_emit("exception", {"err_type": type(e).__name__, "where": "ws_send"})
+            except Exception:
+                pass
             print(f"[WS] send failed: {e!r}")
             return False
 
@@ -10700,10 +10801,10 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
     except Exception:
         pass
 
-    # Always emit a meta project line on connect so the UI can sync to the
+    # Always emit a meta project frame on connect so the UI can sync to the
     # server's current project (critical for cross-device consistency).
     try:
-        await _ws_send_safe(f"Project: {current_project}")
+        await _ws_send_safe(json.dumps({"v": 1, "type": "ui.status", "project": current_project}))
     except Exception:
         pass
 
@@ -10714,14 +10815,6 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
         async for raw_msg in websocket:
             # Per-turn flag: set True only when THIS incoming message actually changes projects.
             project_changed = False
-            # Per-turn audit trace id (context-local; safe under asyncio tasks)
-            try:
-                _trace_id = f"turn_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
-                _AUDIT_TRACE_ID.set(_trace_id)
-                # Reset per-turn decision context (so prior turns can't leak into this audit row)
-                _audit_ctx_reset()                
-            except Exception:
-                pass
             # ----------------------------
             # WS Frame Envelope (v1)
             # Accept:
@@ -10740,6 +10833,28 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
             except Exception:
                 frame_obj = {}
                 is_frame = False
+            # Per-turn audit trace id (context-local; safe under asyncio tasks)
+            try:
+                incoming_trace = ""
+                if is_frame:
+                    incoming_trace = str(frame_obj.get("trace_id") or "").strip()
+                _trace_id = incoming_trace or f"turn_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+                _AUDIT_TRACE_ID.set(_trace_id)
+                # Reset per-turn decision context (so prior turns can't leak into this audit row)
+                _audit_ctx_reset()
+                _trace_event_count = 0
+            except Exception:
+                pass
+            try:
+                if is_frame:
+                    ftype0 = str(frame_obj.get("type") or "").strip()
+                    if ftype0 != "ws.ping":
+                        _trace_emit("ws.recv", {"type": ftype0})
+                else:
+                    if not (isinstance(raw_msg, str) and raw_msg.strip() == "__ping__"):
+                        _trace_emit("ws.recv", {"type": "raw"})
+            except Exception:
+                pass
             if is_frame:
                 ftype = str(frame_obj.get("type") or "").strip()
 
@@ -10761,6 +10876,10 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         proj_req = str(frame_obj.get("project") or "").strip()
                         proj_short = safe_project_name(proj_req) if proj_req else current_project
                         proj_full = _full(proj_short)
+                        try:
+                            _trace_emit("thread.get.start", {"project": proj_short})
+                        except Exception:
+                            pass
 
                         # Make thread.get authoritative for current project (align server state)
                         if proj_short != current_project:
@@ -10780,6 +10899,10 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             "messages": msgs,
                         }
                         await websocket.send(json.dumps(payload, ensure_ascii=False))
+                        try:
+                            _trace_emit("thread.history", {"history_state": "ok", "messages": len(msgs)})
+                        except Exception:
+                            pass
 
                         # FOUNDATIONAL:
                         # After the UI replays history for a project, emit a human greeting immediately.
@@ -10795,11 +10918,15 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 )
                                 if not (gmsg or "").strip():
                                     gmsg = "What are we working on today?"
-                                await websocket.send(str(gmsg).strip())
+                                await websocket.send(json.dumps({"v": 1, "type": "ui.greeting", "text": str(gmsg).strip()}))
                         except Exception:
                             pass
                         # NOTE:
                         # Greeting is already emitted above with de-duplication.
+                        try:
+                            _trace_emit("thread.get.end", {"project": proj_short})
+                        except Exception:
+                            pass
 
                     except Exception:
                         # fail silent: don't poison the session
@@ -10837,11 +10964,11 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             k = f"{proj_full}|{reason_l}"
                             if k not in greeted_expert_switch:
                                 greeted_expert_switch.add(k)
-                                await websocket.send(str(gmsg).strip())
+                                await websocket.send(json.dumps({"v": 1, "type": "ui.greeting", "text": str(gmsg).strip()}))
                         else:
                             if proj_full not in greeted_projects:
                                 greeted_projects.add(proj_full)
-                                await websocket.send(str(gmsg).strip())
+                                await websocket.send(json.dumps({"v": 1, "type": "ui.greeting", "text": str(gmsg).strip()}))
                     except Exception:
                         pass
                     continue
@@ -10878,7 +11005,13 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                         if proj:
                             old_short = current_project
                             old_full = current_project_full
-                            current_project = safe_project_name(proj)
+                            next_short = safe_project_name(proj)
+                            if next_short != old_short:
+                                try:
+                                    _trace_emit("project.switch.start", {"from": old_short, "to": next_short})
+                                except Exception:
+                                    pass
+                            current_project = next_short
                             current_project_full = _full(current_project)
                             _save_last_project(user, current_project)
 
@@ -10887,6 +11020,11 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
                             ensure_project_scaffold(current_project_full)
                             _ws_move_client(old_full, current_project_full, websocket)
+                            if current_project != old_short:
+                                try:
+                                    _trace_emit("project.switch.end", {"from": old_short, "to": current_project})
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
 
@@ -11536,6 +11674,16 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                                 )
                             except Exception:
                                 pass
+                            try:
+                                _trace_emit(
+                                    "routing.classify",
+                                    {
+                                        "continuation": cont_label,
+                                        "reason": str(cont_obj.get("reason") or "model").strip() or "model",
+                                    },
+                                )
+                            except Exception:
+                                pass
 
                             # Update "last real question" only when this turn isn't followup-only.
                             if cand and (not cont_followup) and (not _is_generic_search_query(cand)):
@@ -11622,6 +11770,13 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             except Exception:
                                 continuity_label = "same_topic"
                             allow_history_in_lookup = True
+                            try:
+                                _trace_emit(
+                                    "routing.classify",
+                                    {"continuation": continuity_label, "reason": "heuristic"},
+                                )
+                            except Exception:
+                                pass
 
                             # Update "last real question" only when this turn isn't generic/continuation.
                             if cand and (not continuation_op) and (not _is_generic_search_query(cand)):
@@ -11736,12 +11891,23 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                             # No-op: avoid redundant switch churn or greeting spam.
                             _save_last_project(user, current_project)
                             continue
+                        old_short = current_project
+                        if sel != old_short:
+                            try:
+                                _trace_emit("project.switch.start", {"from": old_short, "to": sel})
+                            except Exception:
+                                pass
                         old_full = current_project_full
                         current_project = sel
                         current_project_full = _full(current_project)
                         ensure_project_scaffold(current_project_full)
                         _ws_move_client(old_full, current_project_full, websocket)
                         _save_last_project(user, current_project)
+                        if sel != old_short:
+                            try:
+                                _trace_emit("project.switch.end", {"from": old_short, "to": current_project})
+                            except Exception:
+                                pass
                         if suppress_switch_greeting:
                             await websocket.send(f"Project: {current_project}")
                         else:
@@ -11777,8 +11943,9 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     continue
 
                 # New / switch project (explicit only)
-                    if cmd_lower.startswith(("new project:", "start project:", "new project ", "start project ")):
-                        old_full = current_project_full
+                if cmd_lower.startswith(("new project:", "start project:", "new project ", "start project ")):
+                    old_short = current_project
+                    old_full = current_project_full
                     # Accept both:
                     # - "new project: Alpha"
                     # - "new project Alpha"
@@ -11792,9 +11959,19 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
                     current_project = name
                     current_project_full = _full(current_project)
+                    if current_project != old_short:
+                        try:
+                            _trace_emit("project.switch.start", {"from": old_short, "to": current_project})
+                        except Exception:
+                            pass
                     ensure_project_scaffold(current_project_full)
                     _ws_move_client(old_full, current_project_full, websocket)
                     _save_last_project(user, current_project)
+                    if current_project != old_short:
+                        try:
+                            _trace_emit("project.switch.end", {"from": old_short, "to": current_project})
+                        except Exception:
+                            pass
                     await websocket.send(_project_switch_message(current_project, prefix="Started new project:"))
                     # If this is a brand-new empty project, send a human first-line immediately.
                     # Emit a human contextual greeting immediately on new project (no user input required).
@@ -11858,6 +12035,7 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     continue
 
                 if cmd_lower.startswith(("switch project:", "use project:", "switch project ", "use project ")):
+                    old_short = current_project
                     old_full = current_project_full
                     # Accept both:
                     # - "switch project: alpha"
@@ -11877,9 +12055,19 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
 
                     current_project = name
                     current_project_full = _full(current_project)
+                    if current_project != old_short:
+                        try:
+                            _trace_emit("project.switch.start", {"from": old_short, "to": current_project})
+                        except Exception:
+                            pass
                     ensure_project_scaffold(current_project_full)
                     _ws_move_client(old_full, current_project_full, websocket)
                     _save_last_project(user, current_project)
+                    if current_project != old_short:
+                        try:
+                            _trace_emit("project.switch.end", {"from": old_short, "to": current_project})
+                        except Exception:
+                            pass
 
                     if suppress_switch_greeting:
                         await websocket.send(f"Project: {current_project}")
@@ -12083,7 +12271,16 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     search_route_mode = str(cmd_reply[1] or "").strip().lower()
                     clean_user_msg = str(cmd_reply[2] or "").strip()
                     lower = clean_user_msg.lower().strip()
+                    try:
+                        _trace_emit("tool.route", {"tool": "search", "reason": search_route_mode or "route"})
+                    except Exception:
+                        pass
                 else:
+                    try:
+                        tool_name = (lower.split()[0] if lower else "").strip() or "ws_command"
+                        _trace_emit("tool.route", {"tool": tool_name, "reason": "ws_command"})
+                    except Exception:
+                        pass
                     await websocket.send(cmd_reply)
                     last_full_answer_text = cmd_reply
                     continue
@@ -14287,21 +14484,32 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 except Exception:
                     pass
 
-                result = await model_pipeline.run_request_pipeline(
-
-                    ctx=sys.modules[__name__],
-                    current_project_full=current_project_full,
-                    clean_user_msg=clean_user_msg,
-                    do_search=bool(do_search),
-                    search_results=search_results,
-                    conversation_history=conversation_history,
-                    max_history_pairs=MAX_HISTORY_PAIRS,
-                    server_file_path=Path(__file__).resolve(),
-                    allow_history_in_lookup=bool(allow_history_in_lookup),
-                    search_cached=bool(search_cached),
-                    thread_synthesis_text=thread_synthesis_for_turn,
-                    active_expert=active_expert,
-                )
+                _gen_ok = False
+                try:
+                    _trace_emit("assistant.generate.start")
+                except Exception:
+                    pass
+                try:
+                    result = await model_pipeline.run_request_pipeline(
+                        ctx=sys.modules[__name__],
+                        current_project_full=current_project_full,
+                        clean_user_msg=clean_user_msg,
+                        do_search=bool(do_search),
+                        search_results=search_results,
+                        conversation_history=conversation_history,
+                        max_history_pairs=MAX_HISTORY_PAIRS,
+                        server_file_path=Path(__file__).resolve(),
+                        allow_history_in_lookup=bool(allow_history_in_lookup),
+                        search_cached=bool(search_cached),
+                        thread_synthesis_text=thread_synthesis_for_turn,
+                        active_expert=active_expert,
+                    )
+                    _gen_ok = True
+                finally:
+                    try:
+                        _trace_emit("assistant.generate.end", {"ok": bool(_gen_ok)})
+                    except Exception:
+                        pass
                 # Update thread synthesis cache from current evidence (ephemeral)
                 try:
                     sr0 = (search_results or "").strip()
@@ -14386,6 +14594,10 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                     user_answer = "Done. (Pipeline returned an empty response.)"
 
             except Exception as e:
+                try:
+                    _trace_emit("exception", {"err_type": type(e).__name__, "where": "run_request_pipeline"})
+                except Exception:
+                    pass
                 err = f"I hit an internal error: {e!r}"
                 await _ws_send_safe(err)
                 last_full_answer_text = err
@@ -14501,8 +14713,16 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 pass
 
     except (ConnectionClosedOK, ConnectionClosedError) as e:
+        try:
+            _trace_emit("exception", {"err_type": type(e).__name__, "where": "ws_connection"})
+        except Exception:
+            pass
         print(f"[WS] Client disconnected: {e!r}")
     except Exception as e:
+        try:
+            _trace_emit("exception", {"err_type": type(e).__name__, "where": "ws_handler"})
+        except Exception:
+            pass
         print(f"[WS] Unhandled error: {e!r}")
     finally:
         try:
