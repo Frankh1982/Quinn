@@ -2008,7 +2008,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
           v: 1,
           type: "chat.send",
           text: "!last answer",
-          project: (currentProjectName || p || "default"),
+          project: currentProjectForSend(),
           active_expert: (activeExpert || "default"),
           intent: {}
         }));
@@ -2727,7 +2727,7 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
                   v: 1,
                   type: "chat.send",
                   text: "!switch project: default",
-                  project: (currentProjectName || desiredProjectName || "default"),
+                  project: currentProjectForSend(),
                   active_expert: (activeExpert || "default"),
                   intent: {}
                 }));
@@ -2806,12 +2806,12 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
             // Use canonical WS frame (no user bubble).
             try {
               ws.send(JSON.stringify({
-                v: 1,
-                type: "chat.send",
-                text: "!switch project: " + name,
-                project: (currentProjectName || desiredProjectName || "default"),
-                active_expert: (activeExpert || "default"),
-                intent: {}
+                  v: 1,
+                  type: "chat.send",
+                  text: "!switch project: " + name,
+                  project: currentProjectForSend(),
+                  active_expert: (activeExpert || "default"),
+                  intent: {}
               }));
             } catch (_) {}
 
@@ -3986,6 +3986,9 @@ const BASE_UPLOAD_URL = `${API_ORIGIN}/upload`;
       // During early connect, currentProjectName may lag; fall back to desiredProjectName.
       return (currentProjectName || desiredProjectName || "default").trim() || "default";
     }
+    function currentProjectForSend() {
+      return (currentProjectName || desiredProjectName || "default").trim() || "default";
+    }
 
     function isActualChatText(t) {
       // -------------------------------------------------------------------
@@ -4439,14 +4442,14 @@ function createNewChat(opts = {}) {
     try { ensureThreadVisibleForProject(name); } catch (_) {}
 
     try {
-      ws.send(JSON.stringify({
-        v: 1,
-        type: "chat.send",
-        text: "!switch project: " + name,
-        project: (currentProjectName || desiredProjectName || "default"),
-        active_expert: (activeExpert || "default"),
-        intent: {}
-      }));
+                ws.send(JSON.stringify({
+                  v: 1,
+                  type: "chat.send",
+                  text: "!switch project: " + name,
+                  project: currentProjectForSend(),
+                  active_expert: (activeExpert || "default"),
+                  intent: {}
+                }));
     } catch (_) {}
 
     showThinking();
@@ -4899,6 +4902,7 @@ function updateProjectName(name) {
                    try {
                      const proj = String(obj.project || "").trim() || (currentProjectName || desiredProjectName || "default");
                      const msgs = Array.isArray(obj.messages) ? obj.messages : [];
+                     try { updateProjectName(proj); } catch (_) {}
 
                      // If we have history, clear + replay.
                      if (msgs.length > 0) {
@@ -4916,22 +4920,7 @@ function updateProjectName(name) {
                        }
                      }
 
-                    // Ask the server for a contextual greeting AFTER history replay.
-                    // Runs on both new projects and switches; the server can decide to no-op.
-                    try {
-                      if (ws && ws.readyState === WebSocket.OPEN) {
-                        const p = String(proj || "").trim() || "default";
-                        const now = Date.now();
-                        const last = __greetReqLastAt[p] || 0;
-
-                        // Only request greeting once per project per short window
-                        if ((now - last) >= 6000) {
-                          __greetReqLastAt[p] = now;
-                          const reason = (msgs.length === 0) ? "new_project" : "switch_project";
-                          ws.send(JSON.stringify({ v: 1, type: "greeting.request", project: p, reason }));
-                        }
-                      }
-                    } catch (_) {}
+                    // Greeting requests are only sent on explicit hat switches.
                    } catch (_) {}
                    return; // critical: stop default chat append
                  }
@@ -5363,10 +5352,13 @@ function updateProjectName(name) {
           v: 1,
           type: "chat.send",
           text: outbound,
-          project: (currentProjectName || "default"),
+          project: currentProjectForSend(),
           active_expert: (activeExpert || "default"),
           intent: {}
         };
+        try {
+          console.log("[TRACE] send chat.send", { project: frame.project, text: (frame.text || "").slice(0, 30) });
+        } catch (_) {}
         ws.send(JSON.stringify(frame));
         showThinking();
       } catch (e) {
@@ -5633,7 +5625,7 @@ function updateProjectName(name) {
                 v: 1,
                 type: "chat.send",
                 text: "!switch project: " + name,
-                project: (currentProjectName || desiredProjectName || "default"),
+                project: currentProjectForSend(),
                 active_expert: (activeExpert || "default"),
                 intent: {}
               }));

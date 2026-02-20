@@ -10849,7 +10849,37 @@ async def handle_connection(websocket, path=None):  # path optional for websocke
                 if is_frame:
                     ftype0 = str(frame_obj.get("type") or "").strip()
                     if ftype0 != "ws.ping":
-                        _trace_emit("ws.recv", {"type": ftype0})
+                        detail0: Dict[str, Any] = {"type": ftype0}
+                        if ftype0 == "chat.send":
+                            try:
+                                _t = str(
+                                    frame_obj.get("text")
+                                    or frame_obj.get("message")
+                                    or frame_obj.get("content")
+                                    or ""
+                                )
+                            except Exception:
+                                _t = ""
+                            try:
+                                detail0["text_preview"] = (_t or "").replace("\n", " ")[:80]
+                                if "project" in frame_obj:
+                                    detail0["project_field"] = frame_obj.get("project")
+                                # Mark as command if it matches explicit command gate.
+                                try:
+                                    s0 = (_t or "").strip()
+                                    is_cmd = False
+                                    if s0.startswith("!"):
+                                        is_cmd = True
+                                    else:
+                                        low0 = s0.lower()
+                                        if low0.startswith("/cmd"):
+                                            is_cmd = True
+                                    detail0["is_command"] = bool(is_cmd)
+                                except Exception:
+                                    detail0["is_command"] = False
+                            except Exception:
+                                pass
+                        _trace_emit("ws.recv", detail0)
                 else:
                     if not (isinstance(raw_msg, str) and raw_msg.strip() == "__ping__"):
                         _trace_emit("ws.recv", {"type": "raw"})
