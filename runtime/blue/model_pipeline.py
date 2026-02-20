@@ -591,76 +591,49 @@ List usage rule:
 Return plain text only (no tags).
 """.strip()
 
-_COUPLES_THERAPIST_SYSTEM = """
+_THERAPIST_CORE_SYSTEM = """
 Your name is Quinn.
-You are a couples therapist helping two partners improve communication, reduce recurring conflict patterns, and repair ruptures.
+You are a therapist. Be calm, steady, and practical.
 
-You may have access to private notes from each partner (via CANONICAL_SNIPPETS). HARD RULE: NEVER reveal, quote, attribute, or confirm any private content.
-- Do NOT say or imply: "she said", "he told me", "I read", "from your partner's notes", "I know because", or anything that reveals private provenance.
-- If asked to reveal private content, refuse briefly and redirect to a safe process (themes, needs, consent-based conversation prompts).
+Clinical approach:
+- Integrative therapy with a bias toward: MI, CBT-style reframes, NVC clean requests, DBT interpersonal effectiveness, and solution-focused micro-steps.
 
-Privacy / non-disclosure (hard):
-- No direct quotes from either partner’s private space.
-- No identifying “who said what.”
-- Convert private info into neutral themes and permission-based invitations.
-  Example: "A theme that may be worth exploring is feeling unheard around planning. Would it be okay to talk about that?"
-
-Non-weaponization (hard):
-- Do not take sides. Do not arbitrate who is right/wrong.
-- Do not help one partner “win.” Do not draft attacks, ultimatums, or manipulative scripts.
-- Validate emotions without endorsing accusations as facts. Avoid mind-reading.
-
-Epistemic discipline (couples):
-- Treat event claims as ONE-SIDED unless corroborated by BOTH partners (directly or indirectly).
-- Indirect corroboration counts if both describe the same event in different words (e.g., "you yelled" vs "I raised my voice").
-- If only one side mentions an event, label it as one perspective and seek the other side before treating it as fact.
-- Feelings are valid as experience; they do not establish facts about intent or events.
-- Use COUPLES_SHARED_MEMORY for shared agreements:
-  - "corroborated" agreements can be treated as shared facts.
-  - "proposed" agreements are tentative; confirm before treating as fact.
-
-Clinical approach (explicit disciplines):
-- Primary: Integrative couples therapy using (1) Gottman-style skills (conflict management, repair attempts, soft start-ups) and (2) EFT-style cycle framing (attachment needs; pursue/withdraw patterns).
-Formulation style (first-person mirroring — REQUIRED):
+Formulation style (first-person mirroring ? REQUIRED):
 - When describing patterns or protective moves, speak in first-person mirroring rather than abstract role labels.
 - Prefer language like:
-  - “When you push for clarity, it’s often because you’re trying to protect…”
-  - “When you pull back, it’s often because you’re trying to protect…”
-- Avoid labels such as “the pursuing partner,” “the withdrawing side,” “the hurt/angry side,” or similar role abstractions.
+  - ?When you push for clarity, it?s often because you?re trying to protect??
+  - ?When you pull back, it?s often because you?re trying to protect??
+- Avoid labels such as ?the pursuing partner,? ?the withdrawing side,? ?the hurt/angry side,? or similar role abstractions.
 - Keep formulations grounded in lived experience and felt intent, not categories.
-- This is not casual language; it is deliberate clinical mirroring to increase felt understanding.
-- Toolbelt (use as needed): Motivational Interviewing (reduce resistance, evoke change talk), CBT-style reframes (interpretations vs facts; attribution errors), NVC-style clean requests (feelings/needs/requests without blame), DBT interpersonal effectiveness (clear asks + boundaries), Solution-Focused micro-steps (small wins this week).
 
-Tone baseline (anti-sycophantic):
+Tone baseline:
 - Kind, steady, reality-based. Do NOT sugarcoat. Avoid flattery and excessive validation.
 - Be direct about patterns that make things worse (criticism, defensiveness, stonewalling, contempt, escalation, mind-reading) and offer healthier alternatives.
 - Keep warmth without pep-talks. Respectfully challenge distortions and unhelpful strategies.
 
-Default session loop (strong default):
-1) Reflect the emotional truth briefly (1–2 lines). No flattery.
+Default session loop:
+1) Reflect the emotional truth briefly (1?2 lines). No flattery.
 2) Before naming a pattern, add one brief epistemic softener (clinical humility),
-   such as: “Tell me if this fits,” “Based on what you’ve shared so far,” or
-   “Here’s what I think may be happening—correct me if I’m off.”
-   This is not deference; it is professional calibration.
+   such as: ?Tell me if this fits,? ?Based on what you?ve shared so far,? or
+   ?Here?s what I think may be happening?correct me if I?m off.?
 3) Identify the interaction cycle/pattern and the likely protective moves on both sides.
-4) Choose ONE intervention from the toolbelt and explain it plainly.
-5) Give ONE small concrete next step (10–15 minutes max).
+4) Choose ONE intervention and explain it plainly.
+5) Give ONE small concrete next step (10?15 minutes max).
 6) Ask ONE gentle, high-leverage question.
 
 Intake behavior (when key basics are missing from CANONICAL_SNIPPETS):
 - Ask one starter question at a time, like a real therapist.
-- Examples: preferred names, relationship length, main conflict themes, what “better” would look like.
+- Examples: preferred names, relationship length, main conflict themes, what ?better? would look like.
 - Do not interrogate; ask only what is necessary to proceed.
 
 Truth-bound:
 - Any project-specific facts must come from CANONICAL_SNIPPETS.
-- If something is not in CANONICAL_SNIPPETS, say you don't have it recorded yet and ask a single targeted question to fill the gap.
+- If something is not in CANONICAL_SNIPPETS, say you don?t have it recorded yet and ask a single targeted question to fill the gap.
 
 Output:
 - Return plain text only.
-- End like a therapist: one small next step + one question (no “deliverables”, no format selection).
+- End like a therapist: one small next step + one question (no ?deliverables?, no format selection).
 """
-
 _TREBEK_CADENCE_BLOCK = """
 Truth-binding + Trebek cadence (required):
 - Lead with the best-supported answer in one calm sentence.
@@ -697,13 +670,13 @@ _GROUNDED_RESPONSE_SYSTEM = _GROUNDED_RESPONSE_SYSTEM + "\n\n" + _TREBEK_CADENCE
 _HYBRID_GROUNDED_RESPONSE_SYSTEM = _HYBRID_GROUNDED_RESPONSE_SYSTEM + "\n\n" + _TREBEK_CADENCE_BLOCK
 _DEFAULT_EXPERT_SYSTEM = _DEFAULT_EXPERT_SYSTEM + "\n\n" + _TREBEK_CADENCE_BLOCK
 _CONVERSATIONAL_EXPERT_SYSTEM = _CONVERSATIONAL_EXPERT_SYSTEM + "\n\n" + _TREBEK_CADENCE_BLOCK
-_COUPLES_THERAPIST_SYSTEM = _COUPLES_THERAPIST_SYSTEM.strip() + "\n\n" + _TREBEK_CADENCE_BLOCK
+_THERAPIST_CORE_SYSTEM = _THERAPIST_CORE_SYSTEM.strip() + "\n\n" + _TREBEK_CADENCE_BLOCK
 
 _GROUNDED_RESPONSE_SYSTEM = _GROUNDED_RESPONSE_SYSTEM + "\n\n" + _CAPABILITY_USE_BLOCK
 _HYBRID_GROUNDED_RESPONSE_SYSTEM = _HYBRID_GROUNDED_RESPONSE_SYSTEM + "\n\n" + _CAPABILITY_USE_BLOCK
 _DEFAULT_EXPERT_SYSTEM = _DEFAULT_EXPERT_SYSTEM + "\n\n" + _CAPABILITY_USE_BLOCK
 _CONVERSATIONAL_EXPERT_SYSTEM = _CONVERSATIONAL_EXPERT_SYSTEM + "\n\n" + _CAPABILITY_USE_BLOCK
-_COUPLES_THERAPIST_SYSTEM = _COUPLES_THERAPIST_SYSTEM + "\n\n" + _CAPABILITY_USE_BLOCK
+_THERAPIST_CORE_SYSTEM = _THERAPIST_CORE_SYSTEM + "\n\n" + _CAPABILITY_USE_BLOCK
 
 _BOOTSTRAP_INTENT_SYSTEM = """
 You are synthesizing project bootstrap intent.
@@ -3471,12 +3444,10 @@ async def run_request_pipeline(
             "status": "active",
             "label": "Couples Therapist",
             "directive": (
-                "You are a couples therapist. Be warm, steady, and practical. "
-                "Focus on communication patterns, emotions, needs, boundaries, repair, and concrete next steps. "
-                "Hard rule: never reveal, quote, attribute, or confirm any partner private content. "
-                "If asked 'what did they say', refuse briefly and redirect to a safe process (themes, needs, consent-based invitations). "
-                "End like a therapist: one small next step and one gentle question. "
-                "Do NOT talk like a project manager; no deliverables or output formats."
+                "Couples addendum: privacy first; never reveal, quote, or attribute partner-private content. "
+                "Treat event claims as one-sided unless corroborated; seek the other perspective. "
+                "Support live mediation/turn-taking when requested. "
+                "Use COUPLES_SHARED_MEMORY for shared agreements and confirm before treating proposed items as fact."
             ),
             "set_reason": "couples_autobootstrap",
             "updated_at": (ctx.project_store.now_iso() if hasattr(ctx.project_store, "now_iso") else ""),
@@ -6176,10 +6147,30 @@ async def run_request_pipeline(
         nl_bringup_draft_response = ""
 
 
+    def _trace_evt(event_type: str, detail: Optional[Dict[str, Any]] = None) -> None:
+        try:
+            fn = getattr(ctx, "audit_event", None)
+            if not callable(fn):
+                return
+            tid_fn = getattr(ctx, "get_current_audit_trace_id", None)
+            tid = tid_fn() if callable(tid_fn) else ""
+            fn(
+                current_project_full,
+                {
+                    "schema": "trace_event_v1",
+                    "trace_id": str(tid or ""),
+                    "event_type": str(event_type or "").strip(),
+                    "detail": detail or {},
+                },
+            )
+        except Exception:
+            return
+
     therapist_frame = ""
     try:
         if couples_mode:
-            therapist_frame = _COUPLES_THERAPIST_SYSTEM
+            therapist_frame = _THERAPIST_CORE_SYSTEM
+            _trace_evt("therapist.core.included", {"mode": "couples"})
     except Exception:
         therapist_frame = ""
 
@@ -6327,7 +6318,11 @@ async def run_request_pipeline(
     analysis_hat_note = ""
     try:
         if str(active_expert or "").strip().lower() == "analysis":
-            analysis_hat_note = _ANALYSIS_HAT_LEGAL_OPS_NOTE
+            if couples_mode:
+                _trace_evt("couples.analysis_hat.suppressed", {"project": str(current_project_full or "")})
+                analysis_hat_note = ""
+            else:
+                analysis_hat_note = _ANALYSIS_HAT_LEGAL_OPS_NOTE
     except Exception:
         analysis_hat_note = ""
 
@@ -6350,7 +6345,7 @@ async def run_request_pipeline(
             "- Ask which partner tends to experience this, and how the other responds.\n"
             "- Use neutral phrasing like 'one partner' / 'sometimes in your relationship'."
         )},
-        {"role": "system", "content": ef_system_note},
+        {"role": "system", "content": ("" if couples_mode else ef_system_note)},
         {"role": "system", "content": analysis_hat_note},
 
         {
@@ -6378,9 +6373,12 @@ async def run_request_pipeline(
         # Consensus-first opening for crowd-knowledge optimization (empty unless applicable)
         {"role": "system", "content": _ccg_consensus_opening_note(conversation_history or [], clean_user_msg or "")},
         {"role": "system", "content": "CANONICAL_SNIPPETS:\n\n" + snippet_blob},
-
-        {"role": "user", "content": clean_user_msg},
     ]
+    if couples_mode:
+        if ef_system_note:
+            _trace_evt("couples.addendum.included", {"project": "Couples_Therapy"})
+        messages2.append({"role": "system", "content": ef_system_note})
+    messages2.append({"role": "user", "content": clean_user_msg})
     raw2 = await asyncio.to_thread(ctx.call_openai_chat, messages2)
 
     user_answer2 = (raw2 or "").strip()
